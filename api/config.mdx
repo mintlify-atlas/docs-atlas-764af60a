@@ -1,0 +1,516 @@
+---
+title: "Configuration"
+description: "API reference for configuration dataclasses"
+---
+
+## Overview
+
+The `research.config` module provides configuration dataclasses for system settings, training parameters, compression, quantization, deployment, and hardware simulation.
+
+## Configuration Classes
+
+### SystemConfig
+
+```python
+@dataclass
+class SystemConfig:
+    seed: int = 40
+    sample_size: int = 6000
+    test_size: float = 0.3
+    normalize: bool = True
+    dataset: str = "mnist"
+    fail_fast_dataset: bool = False
+    artifacts_dir: Path = Path("artifacts")
+    confidence_z: float = 1.96
+```
+
+System-wide configuration for experiments including reproducibility, data handling, and output settings.
+
+**Attributes:**
+
+<ParamField path="seed" type="int" default="40">
+  Random seed for reproducibility. Controls:
+  - Dataset splitting
+  - Random Forest initialization
+  - All random number generation
+</ParamField>
+
+<ParamField path="sample_size" type="int" default="6000">
+  Total number of samples to use from the dataset (includes both train and test).
+  
+  **Examples:**
+  - `6000`: Default, balanced performance
+  - `1000`: Quick experiments
+  - `60000`: Full MNIST dataset
+</ParamField>
+
+<ParamField path="test_size" type="float" default="0.3">
+  Fraction of data to use for testing (0.0 to 1.0).
+  
+  - `0.3`: 30% test, 70% train
+  - `0.2`: 20% test, 80% train
+</ParamField>
+
+<ParamField path="normalize" type="bool" default="true">
+  Whether to normalize features to [0, 1] range.
+  
+  Recommended: `True` for KNN, optional for Random Forest.
+</ParamField>
+
+<ParamField path="dataset" type="str" default="mnist">
+  Dataset to load.
+  
+  **Choices:**
+  - `"mnist"`: Full MNIST dataset (70,000 samples, 784 features)
+  - `"digits"`: Scikit-learn digits dataset (1,797 samples, 64 features)
+</ParamField>
+
+<ParamField path="fail_fast_dataset" type="bool" default="false">
+  If `True`, raise errors immediately if dataset loading fails.
+  
+  If `False`, warnings are issued instead.
+</ParamField>
+
+<ParamField path="artifacts_dir" type="Path" default="Path('artifacts')">
+  Directory for saving experiment artifacts (models, plots, reports).
+  
+  Created automatically if it doesn't exist.
+</ParamField>
+
+<ParamField path="confidence_z" type="float" default="1.96">
+  Z-score for confidence interval calculation.
+  
+  - `1.96`: 95% confidence interval (default)
+  - `1.645`: 90% confidence interval
+  - `2.576`: 99% confidence interval
+</ParamField>
+
+**Example:**
+
+```python
+from research.config import SystemConfig
+from pathlib import Path
+
+# Default configuration
+default_cfg = SystemConfig()
+
+# Custom configuration
+custom_cfg = SystemConfig(
+    seed=42,
+    sample_size=10000,
+    test_size=0.2,
+    dataset="mnist",
+    artifacts_dir=Path("my_experiments"),
+    confidence_z=2.576  # 99% CI
+)
+```
+
+**Source:** `research/config.py:7`
+
+---
+
+### TrainingConfig
+
+```python
+@dataclass
+class TrainingConfig:
+    model_name: str = "knn"
+    knn_neighbors: int = 4
+    knn_weights: str = "distance"
+    knn_algorithm: str = "auto"
+    rf_n_estimators: int = 500
+    rf_max_features: str = "sqrt"
+    rf_class_weight: str = "balanced"
+    rf_random_state: int = 40
+```
+
+Training hyperparameters for KNN and Random Forest models.
+
+**Attributes:**
+
+<ParamField path="model_name" type="str" default="knn">
+  Model type to train.
+  
+  **Choices:**
+  - `"knn"`: K-Nearest Neighbors
+  - `"rf"`: Random Forest
+</ParamField>
+
+#### KNN Parameters
+
+<ParamField path="knn_neighbors" type="int" default="4">
+  Number of neighbors for KNN classifier.
+  
+  - Smaller values (3-5): More sensitive to local patterns
+  - Larger values (10-20): Smoother decision boundaries
+</ParamField>
+
+<ParamField path="knn_weights" type="str" default="distance">
+  Weight function for KNN.
+  
+  **Choices:**
+  - `"distance"`: Weight by inverse distance
+  - `"uniform"`: All neighbors weighted equally
+</ParamField>
+
+<ParamField path="knn_algorithm" type="str" default="auto">
+  Algorithm for computing nearest neighbors.
+  
+  **Choices:**
+  - `"auto"`: Automatically choose best algorithm
+  - `"ball_tree"`: Ball tree structure
+  - `"kd_tree"`: KD tree structure
+  - `"brute"`: Brute-force search
+</ParamField>
+
+#### Random Forest Parameters
+
+<ParamField path="rf_n_estimators" type="int" default="500">
+  Number of trees in the Random Forest.
+  
+  - More trees: Better performance, slower training
+  - Fewer trees: Faster, may underfit
+</ParamField>
+
+<ParamField path="rf_max_features" type="str" default="sqrt">
+  Number of features to consider for best split.
+  
+  **Choices:**
+  - `"sqrt"`: √n_features (recommended for classification)
+  - `"log2"`: log2(n_features)
+  - Integer: Exact number of features
+  - Float: Fraction of features
+</ParamField>
+
+<ParamField path="rf_class_weight" type="str" default="balanced">
+  Class weight strategy for handling imbalanced data.
+  
+  **Choices:**
+  - `"balanced"`: Automatically adjust weights inversely proportional to class frequencies
+  - `None`: All classes have weight 1
+</ParamField>
+
+<ParamField path="rf_random_state" type="int" default="40">
+  Random state for Random Forest reproducibility.
+  
+  Should typically match `SystemConfig.seed`.
+</ParamField>
+
+**Example:**
+
+```python
+from research.config import TrainingConfig
+
+# KNN configuration
+knn_cfg = TrainingConfig(
+    model_name="knn",
+    knn_neighbors=5,
+    knn_weights="distance",
+    knn_algorithm="auto"
+)
+
+# Random Forest configuration
+rf_cfg = TrainingConfig(
+    model_name="rf",
+    rf_n_estimators=100,
+    rf_max_features="sqrt",
+    rf_class_weight="balanced",
+    rf_random_state=42
+)
+```
+
+**Source:** `research/config.py:19`
+
+---
+
+### CompressionConfig
+
+```python
+@dataclass
+class CompressionConfig:
+    weight_pruning_level: float = 0.2
+    neuron_pruning_level: float = 0.1
+```
+
+Configuration for feature pruning experiments.
+
+**Attributes:**
+
+<ParamField path="weight_pruning_level" type="float" default="0.2">
+  Quantile threshold for weight-based pruning (0.0 to 1.0).
+  
+  - `0.0`: No pruning
+  - `0.2`: Prune weights below 20th percentile
+  - `0.5`: Prune weights below median
+  - `0.9`: Aggressive pruning
+</ParamField>
+
+<ParamField path="neuron_pruning_level" type="float" default="0.1">
+  Quantile threshold for variance-based neuron pruning (0.0 to 1.0).
+  
+  - `0.0`: Keep all features
+  - `0.1`: Remove bottom 10% by variance
+  - `0.5`: Remove bottom 50% by variance
+</ParamField>
+
+**Example:**
+
+```python
+from research.config import CompressionConfig
+
+# Light compression
+light = CompressionConfig(
+    weight_pruning_level=0.1,
+    neuron_pruning_level=0.05
+)
+
+# Aggressive compression
+aggressive = CompressionConfig(
+    weight_pruning_level=0.5,
+    neuron_pruning_level=0.3
+)
+```
+
+**Source:** `research/config.py:31`
+
+---
+
+### QuantizationConfig
+
+```python
+@dataclass
+class QuantizationConfig:
+    modes: Tuple[str, ...] = ("float32", "float16", "int8_sim")
+```
+
+Configuration for quantization experiments.
+
+**Attributes:**
+
+<ParamField path="modes" type="Tuple[str, ...]" default="('float32', 'float16', 'int8_sim')">
+  Quantization modes to test.
+  
+  **Modes:**
+  - `"float32"`: Full precision (baseline)
+  - `"float16"`: Half precision
+  - `"int8_sim"`: 8-bit integer simulation
+</ParamField>
+
+**Example:**
+
+```python
+from research.config import QuantizationConfig
+
+# Default modes
+default_quant = QuantizationConfig()
+
+# Custom modes
+custom_quant = QuantizationConfig(
+    modes=("float32", "float16")
+)
+```
+
+**Source:** `research/config.py:37`
+
+---
+
+### DeploymentConfig
+
+```python
+@dataclass
+class DeploymentConfig:
+    onnx_opset: int = 12
+    batch_size: int = 64
+    onnx_min_agreement: float = 0.98
+```
+
+Configuration for model deployment and ONNX export.
+
+**Attributes:**
+
+<ParamField path="onnx_opset" type="int" default="12">
+  ONNX opset version for export.
+  
+  - `12`: Recommended for scikit-learn models
+  - `13-15`: Newer features, check compatibility
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="64">
+  Batch size for inference.
+  
+  - Smaller (16-32): Memory-constrained environments
+  - Larger (128-256): Better throughput
+</ParamField>
+
+<ParamField path="onnx_min_agreement" type="float" default="0.98">
+  Minimum acceptable prediction agreement between ONNX and scikit-learn (0.0 to 1.0).
+  
+  - `0.98`: Default, allows 2% disagreement
+  - `0.99`: Stricter validation
+  - `1.0`: Perfect agreement required
+</ParamField>
+
+**Example:**
+
+```python
+from research.config import DeploymentConfig
+
+# Production deployment
+prod_cfg = DeploymentConfig(
+    onnx_opset=12,
+    batch_size=128,
+    onnx_min_agreement=0.995  # Very strict
+)
+
+# Development deployment
+dev_cfg = DeploymentConfig(
+    onnx_opset=12,
+    batch_size=32,
+    onnx_min_agreement=0.95
+)
+```
+
+**Source:** `research/config.py:42`
+
+---
+
+### HardwareSimConfig
+
+```python
+@dataclass
+class HardwareSimConfig:
+    memory_budget_mb: int = 8
+    compute_scale: float = 1.0
+    auto_batch_sizes: Tuple[int, ...] = field(default_factory=lambda: (1, 8, 32, 64, 128))
+```
+
+Configuration for hardware constraint simulation.
+
+**Attributes:**
+
+<ParamField path="memory_budget_mb" type="int" default="8">
+  Memory budget in megabytes for simulation.
+  
+  Constrains maximum batch size based on feature dimensions.
+</ParamField>
+
+<ParamField path="compute_scale" type="float" default="1.0">
+  Compute scaling factor for hardware simulation.
+  
+  - `1.0`: Full compute capacity
+  - `0.5`: Simulate 50% slower hardware
+  - `2.0`: Simulate 2x faster hardware
+</ParamField>
+
+<ParamField path="auto_batch_sizes" type="Tuple[int, ...]" default="(1, 8, 32, 64, 128)">
+  Batch sizes to test during hardware simulation.
+  
+  Automatically adjusted based on memory constraints.
+</ParamField>
+
+**Example:**
+
+```python
+from research.config import HardwareSimConfig
+
+# Edge device simulation (constrained)
+edge_hw = HardwareSimConfig(
+    memory_budget_mb=4,
+    compute_scale=0.3,  # 30% of baseline
+    auto_batch_sizes=(1, 4, 16, 32)
+)
+
+# Server simulation (powerful)
+server_hw = HardwareSimConfig(
+    memory_budget_mb=64,
+    compute_scale=2.0,  # 2x baseline
+    auto_batch_sizes=(32, 64, 128, 256, 512)
+)
+
+# IoT device simulation (very constrained)
+iot_hw = HardwareSimConfig(
+    memory_budget_mb=2,
+    compute_scale=0.1,
+    auto_batch_sizes=(1, 2, 4, 8)
+)
+```
+
+**Source:** `research/config.py:49`
+
+## Usage Patterns
+
+### Complete Experiment Configuration
+
+```python
+from research.config import (
+    SystemConfig,
+    TrainingConfig,
+    CompressionConfig,
+    DeploymentConfig,
+    HardwareSimConfig
+)
+from pathlib import Path
+
+# System settings
+sys_cfg = SystemConfig(
+    seed=42,
+    sample_size=10000,
+    test_size=0.2,
+    dataset="mnist",
+    artifacts_dir=Path("experiments/exp_001")
+)
+
+# Model training
+tr_cfg = TrainingConfig(
+    model_name="knn",
+    knn_neighbors=5,
+    knn_weights="distance"
+)
+
+# Compression
+comp_cfg = CompressionConfig(
+    weight_pruning_level=0.3,
+    neuron_pruning_level=0.15
+)
+
+# Deployment
+dep_cfg = DeploymentConfig(
+    batch_size=128,
+    onnx_min_agreement=0.99
+)
+
+# Hardware constraints
+hw_cfg = HardwareSimConfig(
+    memory_budget_mb=8,
+    compute_scale=1.0
+)
+```
+
+### Configuration from Command-Line Arguments
+
+```python
+import argparse
+from research.config import SystemConfig, TrainingConfig
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--seed", type=int, default=40)
+parser.add_argument("--model", choices=["knn", "rf"], default="knn")
+parser.add_argument("--sample-size", type=int, default=6000)
+args = parser.parse_args()
+
+sys_cfg = SystemConfig(
+    seed=args.seed,
+    sample_size=args.sample_size
+)
+
+tr_cfg = TrainingConfig(
+    model_name=args.model,
+    rf_random_state=args.seed
+)
+```
+
+## Related
+
+- [Train CLI](/api/train-cli) - Uses SystemConfig, TrainingConfig, CompressionConfig
+- [Evaluate CLI](/api/evaluate-cli) - Uses all config classes
+- [Infer CLI](/api/infer-cli) - Uses SystemConfig, TrainingConfig, DeploymentConfig

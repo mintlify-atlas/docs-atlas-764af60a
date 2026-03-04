@@ -1,0 +1,435 @@
+---
+title: System Design
+description: Architecture trade-offs, design motivations, and operational considerations for the compression research pipeline
+---
+
+## Overview
+
+This framework implements a modular, linear pipeline for evaluating classical ML compression under hardware constraints. The architecture prioritizes reproducibility, auditability, and minimal dependencies while acknowledging trade-offs in hardware fidelity.
+
+## Architecture Overview
+
+The pipeline is organized as a linear flow with modular experiment stages:
+
+<Steps>
+  <Step title="Dataset Loading and Fingerprinting">
+    Load datasets (MNIST, CIFAR-10) with deterministic sampling and integrity checks.
+  </Step>
+  <Step title="Deterministic Split and Normalization">
+    Stratified train-test split with feature normalization.
+  </Step>
+  <Step title="Model Training and Baseline Evaluation">
+    Train KNN or Random Forest baselines with reproducible seeding.
+  </Step>
+  <Step title="Compression and Quantization Experiments">
+    Apply weight pruning, neuron pruning, prototype reduction, or tree pruning.
+  </Step>
+  <Step title="Hardware-Constrained Benchmark Sweeps">
+    Evaluate under memory budgets and compute scaling factors.
+  </Step>
+  <Step title="ONNX Export and Prediction-Parity Validation">
+    Convert models to ONNX and verify numerical agreement.
+  </Step>
+</Steps>
+
+From `system_design.md:5-13`.
+
+<Info>
+This structure keeps each stage **independently testable** while allowing end-to-end execution from CLI entrypoints.
+</Info>
+
+## Design Motivations
+
+### Minimal Moving Parts
+
+- **Scikit-learn baselines**: KNN and Random Forest provide well-understood, stable implementations
+- **NumPy preprocessing**: Array operations are predictable and avoid framework-specific quirks
+- **Single-node execution**: No distributed coordination complexity
+
+From `system_design.md:16-18`.
+
+### Controlled Comparisons
+
+Each experiment mutates **one factor** while preserving:
+- Train-test split indices
+- Random seed state
+- Normalization parameters
+- Evaluation protocol
+
+Example: Pruning experiments vary sparsity level from 0.0 → 0.8 while keeping model architecture, data split, and seed fixed.
+
+### Auditability
+
+- Metrics and metadata stored as **JSON artifacts**
+- Plots generated as **PNG files** for visual inspection
+- Seed schedules recorded for exact reproduction
+
+From `system_design.md:20`.
+
+## Architectural Trade-offs
+
+<CardGroup cols={2}>
+  <Card title="Low Complexity" icon="check">
+    - Fast time-to-run (minutes, not hours)
+    - Clear artifact outputs
+    - Short implementation
+  </Card>
+  <Card title="Simplified Hardware" icon="triangle-exclamation">
+    - CPU-centric assumptions
+    - No GPU/TPU profiling
+    - Analytical bandwidth estimates
+  </Card>
+  <Card title="Reproducible" icon="check">
+    - Deterministic splits and seeds
+    - Controlled experiment factors
+  </Card>
+  <Card title="May Mask Variance" icon="triangle-exclamation">
+    - Deterministic settings don't reflect production randomness
+  </Card>
+</CardGroup>
+
+From `system_design.md:22-27`.
+
+### Pros
+
+- **Low implementation complexity**: ~2000 lines of Python
+- **Short time-to-run**: Typical experiments complete in 5-30 minutes
+- **Clear artifact outputs**: JSON reports and plots in `artifacts/`
+- **Deterministic split and seed policy**: Improves reproducibility
+
+### Cons
+
+- **CPU-centric assumptions**: Under-represent accelerator behavior (GPUs, TPUs)
+- **Simplified hardware abstractions**: Analytical models, not cycle-accurate simulation
+- **Deterministic settings can mask variance**: Production environments have more entropy
+
+## Failure Modes and Bottlenecks
+
+From `system_design.md:29-34`.
+
+<AccordionGroup>
+  <Accordion title="Dataset Loading Failures">
+    **Symptom**: `load_dataset()` fails with network timeout or cache errors.
+    
+    **Cause**: MNIST download from `sklearn.datasets.fetch_openml()` requires network access.
+    
+    **Mitigation**:
+    - Set `SystemConfig.fail_fast_dataset=False` to retry
+    - Pre-download datasets and cache in `~/scikit_learn_data/`
+    - Use local dataset paths if available
+  </Accordion>
+  
+  <Accordion title="KNN Inference Cost Scaling">
+    **Symptom**: Inference latency grows quadratically with reference set size.
+    
+    **Cause**: KNN computes distances to all training samples.
+    
+    **Impact**: Dominates latency for large datasets (>10k samples).
+    
+    **Mitigation**:
+    - Apply prototype reduction (see `knn_prototype_reduction`)
+    - Use `knn_algorithm="ball_tree"` or `"kd_tree"` for faster search
+    - Reduce `sample_size` in `SystemConfig`
+  </Accordion>
+  
+  <Accordion title="Random Forest Memory Footprint">
+    **Symptom**: Memory usage exceeds hardware budget during training or inference.
+    
+    **Cause**: Large ensemble sizes (`rf_n_estimators=500`) with deep trees.
+    
+    **Impact**: Out-of-memory errors on edge devices.
+    
+    **Mitigation**:
+    - Reduce `rf_n_estimators` (try 100-200)
+    - Apply tree pruning with `prune_random_forest()`
+    - Limit `rf_max_depth` in training config
+  </Accordion>
+  
+  <Accordion title="ONNX Parity Failures">
+    **Symptom**: `onnx_runtime` predictions differ from scikit-learn by >2%.
+    
+    **Cause**: Conversion paths alter numeric behavior (quantization, operator fusion).
+    
+    **Impact**: Deployment risk—model may behave differently in production.
+    
+    **Mitigation**:
+    - Lower `DeploymentConfig.onnx_min_agreement` threshold (0.95)
+    - Check ONNX opset compatibility (`onnx_opset=12`)
+    - Validate on subset of data first
+  </Accordion>
+</AccordionGroup>
+
+## Scalability Considerations
+
+From `system_design.md:36-41`.
+
+### Sample Size Effects
+
+Increasing `SystemConfig.sample_size` affects training and inference differently:
+
+| Model | Training Scaling | Inference Scaling |
+|-------|------------------|-------------------|
+| KNN   | O(1) — just stores data | O(n) — distance to all samples |
+| RF    | O(n log n) — tree construction | O(log n) — tree traversal |
+
+<Tip>
+For large datasets (>50k), prefer Random Forest for inference speed.
+</Tip>
+
+### KNN Memory Scaling
+
+- Scales **memory with dataset retention**
+- Prototype reduction helps but may reduce class-boundary fidelity
+- Consider approximate nearest neighbor methods (not implemented) for >100k samples
+
+### Random Forest Depth Scaling
+
+- Scales with **number and depth of trees**
+- Pruning depth lowers latency but may reduce accuracy
+- Typical trade-off: depth 20 → depth 10 gives 30% speedup, 2% accuracy loss
+
+### Artifact Growth
+
+<Warning>
+Artifact growth should be managed if running large sweep grids repeatedly (from `system_design.md:41`).
+</Warning>
+
+Example: A 10×10 hyperparameter grid with 5 runs generates:
+- 500 JSON files (~100 KB each) = 50 MB
+- 500 PNG plots (~200 KB each) = 100 MB
+
+**Mitigation**: Implement artifact retention policy or compress old runs.
+
+## Deployment Challenges
+
+From `system_design.md:43-47`.
+
+### Platform-Specific Runtime Tuning
+
+**Challenge**: Reproducing local latency on target hardware requires platform-specific runtime tuning.
+
+**Considerations**:
+- ONNX Runtime has different performance on x86 vs ARM
+- Quantization support varies (int8 kernels on mobile, float16 on some GPUs)
+- SIMD instruction availability (AVX2, NEON) affects throughput
+
+**Recommendation**: Profile on actual target hardware before finalizing deployment.
+
+### Batch Size Tuning
+
+**Challenge**: Batch-size tuning can improve throughput but may exceed edge memory budgets.
+
+**Trade-off**:
+- Larger batches → better throughput (amortize overhead)
+- Larger batches → more memory consumption
+
+See [Hardware Simulation](/advanced/hardware-simulation) for batch size calculation methodology.
+
+### Parity Thresholds
+
+**Challenge**: Parity thresholds should be selected per deployment risk tolerance and model sensitivity.
+
+**Guidelines**:
+- **Safety-critical** (medical, automotive): 99.9% agreement
+- **Production ML** (recommendations): 98% agreement
+- **Research prototypes**: 95% agreement
+
+From `DeploymentConfig.onnx_min_agreement` (config.py:45).
+
+## Assumptions
+
+From `system_design.md:49-53`.
+
+<CardGroup cols={1}>
+  <Card title="Numeric Features">
+    Input features are numeric and can be normalized without domain loss.
+    
+    **Implication**: Categorical features must be pre-encoded (one-hot, ordinal).
+  </Card>
+  <Card title="CPU Inference Baseline">
+    CPU inference is the primary baseline for comparison.
+    
+    **Implication**: GPU/accelerator speedups are not directly measured.
+  </Card>
+  <Card title="Relative Performance">
+    Performance estimates are relative indicators across configurations.
+    
+    **Implication**: Absolute latency numbers may not transfer to other hardware.
+  </Card>
+</CardGroup>
+
+## Limitations
+
+From `system_design.md:55-59`.
+
+<AccordionGroup>
+  <Accordion title="No Distributed Training/Inference">
+    - Single-node execution only
+    - Cannot scale to multi-GPU or cluster setups
+    - Training on >1M samples may be impractical
+  </Accordion>
+  
+  <Accordion title="No Automatic Artifact Retention Policy">
+    - Artifacts accumulate indefinitely in `artifacts/`
+    - No automatic cleanup or archival
+    - Requires manual management for long-running experiments
+  </Accordion>
+  
+  <Accordion title="No Cycle-Level Hardware Simulator Integration">
+    - Analytical performance models only
+    - Cannot predict cache effects, pipeline stalls, etc.
+    - Not a substitute for real hardware profiling
+  </Accordion>
+</AccordionGroup>
+
+## Hardware Profiling Methodology
+
+From `hardware_profiling.md`.
+
+### Layer-wise / Operator-wise Mapping
+
+Traditional layer-wise breakdown is less direct for KNN and RF than for neural networks. The repository uses **operator-level approximations**:
+
+**KNN operators**:
+- Distance computation (70% of latency)
+- Neighborhood selection (20%)
+- Vote aggregation (10%)
+
+**RF operators**:
+- Per-tree traversal (85%)
+- Node comparison (embedded in traversal)
+- Vote aggregation (10%)
+- Output formatting (5%)
+
+From `hardware_profiling.md:9-13` and `benchmark.py:331-342`.
+
+### Latency and Memory Breakdown
+
+For each benchmark level, collect:
+
+```python
+profile = {
+    "total_latency_s": 0.234,
+    "throughput_samples_per_s": 7692.31,
+    "memory": {
+        "input_batch_mb": 1.25,
+        "serialized_model_mb": 3.45
+    }
+}
+```
+
+From `hardware_profiling.md:16-24` and `benchmark.py:348-357`.
+
+### Bandwidth and Utilization Estimates
+
+Bandwidth approximation:
+
+```python
+bytes_moved = input_batch_bytes + model_bytes
+bandwidth_bytes_per_s = bytes_moved / latency_s
+```
+
+Utilization relative to reference:
+
+```python
+utilization_ratio = observed_throughput / peak_reference_throughput
+```
+
+From `hardware_profiling.md:27-37` and `benchmark.py:344-365`.
+
+<Warning>
+These are **comparative heuristics, not hardware counters** (hardware_profiling.md:37).
+</Warning>
+
+### Precision and Quantization Trade-offs
+
+Quantization modes allow comparing:
+
+| Mode | Memory | Latency Sensitivity | Accuracy Risk |
+|------|--------|---------------------|---------------|
+| float32 | 4 bytes/param | Baseline | None |
+| float16 | 2 bytes/param | 1.5-2× faster (GPU) | &lt;0.5% loss |
+| int8_sim | 1 byte/param | 2-4× faster (mobile) | 1-3% loss |
+
+From `hardware_profiling.md:40-47` and `QuantizationConfig` (config.py:38).
+
+<Info>
+`int8_sim` emulates quantization effects in preprocessing space and does not guarantee parity with backend-specific integer kernels.
+</Info>
+
+### Edge and Constrained Scenarios
+
+Recommended checks:
+
+- Minimum batch size that preserves acceptable throughput
+- Accuracy drift at high sparsity/compression
+- ONNX parity under constrained inference settings
+
+From `hardware_profiling.md:49-55`.
+
+## Design Patterns
+
+### Timed Execution
+
+```python
+from research.core.utils.metrics import timed_call
+
+result, elapsed_time = timed_call(model.predict, x_test)
+print(f"Inference took {elapsed_time:.3f} seconds")
+```
+
+Used throughout `benchmark.py` for reproducible timing.
+
+### Statistical Summarization
+
+```python
+from research.core.utils.metrics import confidence_interval
+
+def _summary(values, z=1.96):
+    mean, std, ci = confidence_interval(values, z)
+    return {"mean": mean, "std": std, "ci95": ci}
+```
+
+From `benchmark.py:21-23`.
+
+### Configuration Dataclasses
+
+All settings use typed dataclasses:
+
+```python
+@dataclass
+class SystemConfig:
+    seed: int = 40
+    sample_size: int = 6000
+    test_size: float = 0.3
+    artifacts_dir: Path = Path("artifacts")
+```
+
+From `config.py:6-15`.
+
+## Best Practices
+
+<Steps>
+  <Step title="Start with Baselines">
+    Run uncompressed KNN/RF first to establish reference metrics.
+  </Step>
+  <Step title="Isolate Variables">
+    Change one factor per experiment (e.g., only pruning level).
+  </Step>
+  <Step title="Use Multiple Runs">
+    5-10 runs with seed schedules for statistical confidence.
+  </Step>
+  <Step title="Archive Artifacts">
+    Store JSON reports and plots in version control or artifact stores.
+  </Step>
+  <Step title="Validate on Target Hardware">
+    Simulation provides guidance—measure on actual deployment platform.
+  </Step>
+</Steps>
+
+## Related
+
+- [Hardware Simulation](/advanced/hardware-simulation) - Simulating constrained resource scenarios
+- [Reproducibility](/advanced/reproducibility) - Ensuring deterministic experiments
+- [Benchmarking](/guides/benchmarking) - Running performance experiments
+- [Configuration](/api/config) - System and hardware configuration reference

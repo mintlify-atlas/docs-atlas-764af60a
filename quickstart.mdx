@@ -1,80 +1,165 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Get started with handwritten digit classification, compression, and deployment in minutes'
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This quickstart guide will walk you through training a baseline model, running compression experiments, and exporting to ONNX for deployment. The workflow uses the built-in digits dataset for fully offline operation.
 
-### Step 1: Set up your local environment
+<Steps>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+### Install Dependencies
 
-### Step 2: Deploy your changes
+First, install the required Python packages:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```bash
+python -m pip install -r requirements.txt
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+### Train Your First Model
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Train a k-nearest neighbors (KNN) classifier with compression and quantization experiments:
 
-### Step 3: Go live
+```bash
+python -m research.train_cli --model knn --dataset digits --run-compression --run-quantization
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This command will:
+- Train a KNN model on the digits dataset
+- Run compression experiments with default pruning levels
+- Run quantization simulations (float16 and int8_sim)
+- Output accuracy metrics and compression results
+- Save artifacts to the `artifacts/` directory
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+The `--dataset digits` flag uses scikit-learn's built-in digits dataset, which works completely offline without network access.
 </Note>
+
+### Run Benchmarking Experiments
+
+Evaluate model performance under hardware constraints:
+
+```bash
+python -m research.evaluate_cli --model rf --dataset digits --runs 5 --run-model-compression --memory-budget-mb 8 --compute-scale 0.75
+```
+
+This performs:
+- 5 repeated training runs with statistical summaries
+- Model-level compression experiments at multiple levels
+- Hardware simulation with 8MB memory budget and 0.75 compute scaling
+- Generates confidence intervals for accuracy metrics
+
+### Export to ONNX
+
+Export your model for deployment with parity validation:
+
+```bash
+python -m research.infer_cli --model knn --dataset digits --batch-size 64 --export-onnx --onnx-min-agreement 0.98
+```
+
+This will:
+- Train a KNN model
+- Run batched CPU inference
+- Export to ONNX format
+- Validate that ONNX predictions match scikit-learn with ≥98% agreement
+- Fail fast if parity drops below threshold
+
+</Steps>
+
+## Understanding the Results
+
+All experimental outputs are saved to the `artifacts/` directory:
+
+- **Run metadata**: JSON files with training configuration and seeds
+- **ONNX models**: Exported `.onnx` files ready for deployment
+- **Parity reports**: `onnx_report_*.json` files with agreement metrics
+- **Compression reports**: Results from pruning and quantization experiments
+
+<CodeGroup>
+
+```bash Training Output
+model=knn accuracy=0.983333
+compression={'weight_pruning': {'accuracy': 0.976667, 'delta': -0.006666}, 'neuron_pruning': {'accuracy': 0.980000, 'delta': -0.003333}}
+quantization={'float16': {'accuracy': 0.983333, 'delta': 0.000000}, 'int8_sim': {'accuracy': 0.980000, 'delta': -0.003333}}
+```
+
+```bash ONNX Export Output
+batch_predictions=1797
+onnx_report={'agreement': 0.9945, 'parity_pass': True, 'samples_tested': 1797}
+```
+
+</CodeGroup>
+
+## Common Workflows
+
+### Offline-Only Operation
+
+For environments without network access, always use the `digits` dataset:
+
+```bash
+python -m research.train_cli --model rf --dataset digits
+```
+
+### Custom Training Parameters
+
+Adjust sample size, seed, and pruning levels:
+
+```bash
+python -m research.train_cli \
+  --model knn \
+  --dataset digits \
+  --sample-size 1000 \
+  --seed 42 \
+  --run-compression \
+  --weight-prune 0.3 \
+  --neuron-prune 0.15
+```
+
+### Hardware-Constrained Benchmarking
+
+Simulate resource-constrained environments:
+
+```bash
+python -m research.evaluate_cli \
+  --model knn \
+  --dataset digits \
+  --runs 10 \
+  --memory-budget-mb 4 \
+  --compute-scale 0.5
+```
+
+### Pruning Efficiency Analysis
+
+Evaluate accuracy vs. sparsity trade-offs:
+
+```bash
+python -m research.evaluate_cli \
+  --model rf \
+  --dataset digits \
+  --run-pruning-efficiency \
+  --pruning-type weight \
+  --sparsity-levels "0.0,0.2,0.4,0.6,0.8" \
+  --runs 5
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed setup guide with troubleshooting
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/api/train-cli">
+    Complete command-line options
+  </Card>
+  <Card title="Compression" icon="compress" href="/guides/compression">
+    Learn about pruning and quantization
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    ONNX export and inference
+  </Card>
+</CardGroup>
+
+<Warning>
+The `--fail-fast-dataset` flag will raise an error immediately if the dataset cannot be loaded. Use this in CI/CD pipelines to catch data loading issues early.
+</Warning>

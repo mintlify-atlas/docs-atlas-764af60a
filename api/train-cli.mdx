@@ -1,0 +1,192 @@
+---
+title: "train_cli"
+description: "Complete CLI reference for training handwritten digit classifiers"
+---
+
+## Overview
+
+The `research.train_cli` module provides a command-line interface for training machine learning models (KNN and Random Forest) on handwritten digit datasets (MNIST or scikit-learn digits). It supports optional compression and quantization workflows.
+
+## Command Syntax
+
+```bash
+python -m research.train_cli [OPTIONS]
+```
+
+## Arguments
+
+<ParamField path="--model" type="string" default="knn">
+  Model type to train.
+  
+  **Choices:** `knn`, `rf`
+  
+  - `knn`: K-Nearest Neighbors classifier
+  - `rf`: Random Forest classifier
+</ParamField>
+
+<ParamField path="--sample-size" type="int" default="6000">
+  Number of samples to use from the dataset for training and testing.
+</ParamField>
+
+<ParamField path="--seed" type="int" default="40">
+  Random seed for reproducibility. Controls dataset splitting and Random Forest initialization.
+</ParamField>
+
+<ParamField path="--dataset" type="string" default="mnist">
+  Dataset to use for training.
+  
+  **Choices:** `mnist`, `digits`
+  
+  - `mnist`: Full MNIST handwritten digits dataset (70,000 samples)
+  - `digits`: Scikit-learn digits dataset (1,797 samples)
+</ParamField>
+
+<ParamField path="--fail-fast-dataset" type="boolean" default="false">
+  Enable fail-fast mode for dataset loading. Raises errors immediately if dataset cannot be loaded.
+  
+  **Flag:** Use `--fail-fast-dataset` to enable (no value required)
+</ParamField>
+
+<ParamField path="--run-compression" type="boolean" default="false">
+  Run compression experiments after training the base model.
+  
+  **Flag:** Use `--run-compression` to enable (no value required)
+</ParamField>
+
+<ParamField path="--run-quantization" type="boolean" default="false">
+  Run quantization experiments after training the base model.
+  
+  **Flag:** Use `--run-quantization` to enable (no value required)
+</ParamField>
+
+<ParamField path="--weight-prune" type="float" default="0.2">
+  Weight pruning level (0.0 to 1.0). Sets the quantile threshold for weight-based feature pruning.
+  
+  Only used when `--run-compression` is enabled.
+</ParamField>
+
+<ParamField path="--neuron-prune" type="float" default="0.1">
+  Neuron pruning level (0.0 to 1.0). Sets the quantile threshold for variance-based feature pruning.
+  
+  Only used when `--run-compression` is enabled.
+</ParamField>
+
+## Output Format
+
+The CLI prints results to stdout in the following format:
+
+### Base Training Output
+
+```
+model=<model_name> accuracy=<accuracy_value>
+```
+
+**Example:**
+```
+model=knn accuracy=0.965333
+```
+
+### Compression Output (if enabled)
+
+```
+compression=<compression_results_dict>
+```
+
+**Example:**
+```
+compression={'weight_pruning': {...}, 'neuron_pruning': {...}}
+```
+
+### Quantization Output (if enabled)
+
+```
+quantization=<quantization_results_dict>
+```
+
+**Example:**
+```
+quantization={'float32': {...}, 'float16': {...}, 'int8_sim': {...}}
+```
+
+## Usage Examples
+
+### Basic Training
+
+Train a KNN model on MNIST with default settings:
+
+```bash
+python -m research.train_cli
+```
+
+### Train Random Forest
+
+Train a Random Forest model on the digits dataset:
+
+```bash
+python -m research.train_cli --model rf --dataset digits
+```
+
+### Training with Compression
+
+Train a model and run compression experiments:
+
+```bash
+python -m research.train_cli \
+  --model knn \
+  --run-compression \
+  --weight-prune 0.3 \
+  --neuron-prune 0.15
+```
+
+### Complete Pipeline
+
+Run training with both compression and quantization:
+
+```bash
+python -m research.train_cli \
+  --model rf \
+  --sample-size 10000 \
+  --seed 42 \
+  --run-compression \
+  --run-quantization
+```
+
+### Reproducible Experiment
+
+Train with specific seed and sample size:
+
+```bash
+python -m research.train_cli \
+  --model knn \
+  --seed 123 \
+  --sample-size 5000 \
+  --dataset mnist
+```
+
+## Implementation Details
+
+### Workflow
+
+1. **Configuration**: Parses command-line arguments and creates configuration objects
+2. **Metadata Export**: Saves run metadata including system and training configs
+3. **Training**: Trains the base model using `train_once()` function
+4. **Compression** (optional): Applies weight and neuron pruning if `--run-compression` is set
+5. **Quantization** (optional): Tests multiple quantization modes if `--run-quantization` is set
+
+### Configuration Objects Created
+
+- `SystemConfig`: Contains seed, sample_size, dataset, and fail_fast_dataset settings
+- `TrainingConfig`: Contains model_name and rf_random_state
+- `CompressionConfig`: Contains weight_pruning_level and neuron_pruning_level (if compression enabled)
+- `QuantizationConfig`: Uses default modes (if quantization enabled)
+
+## Source Location
+
+`research/train_cli.py:7`
+
+## Related
+
+- [Config Reference](/api/config) - Configuration classes
+- [Compression](/api/compression) - Compression functions
+- [Evaluate CLI](/api/evaluate-cli) - Benchmarking and evaluation CLI
+- [Infer CLI](/api/infer-cli) - Inference and deployment CLI

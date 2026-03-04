@@ -1,0 +1,248 @@
+---
+title: 'Installation'
+description: 'Set up your environment for handwritten digit classification and compression experiments'
+---
+
+## Requirements
+
+### Python Version
+
+This project requires **Python 3.8 or higher**. Verify your Python version:
+
+```bash
+python --version
+```
+
+### System Dependencies
+
+No system-level dependencies are required beyond a standard Python installation. All packages are installable via pip.
+
+## Installation Steps
+
+<Steps>
+
+### Clone or Download the Repository
+
+Ensure you have the project source code available locally.
+
+### Install Core Dependencies
+
+Install all required packages from `requirements.txt`:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+This installs:
+- **tensorflow** - Deep learning framework (used for data loading utilities)
+- **numpy** - Numerical computing
+- **pandas** - Data manipulation and analysis
+- **matplotlib** - Visualization and plotting
+- **scikit-learn** - Machine learning algorithms (KNN, Random Forest)
+- **joblib** - Model serialization and parallel processing
+- **skl2onnx** - Scikit-learn to ONNX converter
+- **onnxruntime** - ONNX model inference engine
+- **hs-test-python** - Testing framework
+
+### Verify Installation
+
+Confirm the installation by running a quick offline training experiment:
+
+```bash
+python -m research.train_cli --model knn --dataset digits
+```
+
+You should see output similar to:
+
+```
+model=knn accuracy=0.983333
+```
+
+</Steps>
+
+<Note>
+The `digits` dataset is built into scikit-learn and requires no network access. This makes it ideal for verifying your installation in offline environments.
+</Note>
+
+## Dataset Options
+
+The project supports two datasets:
+
+### 1. Digits Dataset (Offline)
+
+The `digits` dataset is included with scikit-learn:
+- **Size**: 1,797 samples (8×8 grayscale images)
+- **Network**: Not required
+- **Use case**: Development, testing, offline environments
+
+```bash
+python -m research.train_cli --model knn --dataset digits
+```
+
+### 2. MNIST Dataset (Online)
+
+The full MNIST dataset is fetched from the network on first use:
+- **Size**: 70,000 samples (28×28 grayscale images)
+- **Network**: Required for first download, then cached
+- **Use case**: Production experiments, benchmarking
+
+```bash
+python -m research.train_cli --model knn --dataset mnist
+```
+
+<Warning>
+MNIST requires network access on first use. The dataset will be cached locally by TensorFlow for subsequent runs.
+</Warning>
+
+## Optional Configuration
+
+### Fail-Fast Dataset Loading
+
+For CI/CD pipelines, use the `--fail-fast-dataset` flag to immediately raise errors if dataset loading fails:
+
+```bash
+python -m research.train_cli --model knn --dataset digits --fail-fast-dataset
+```
+
+### Artifacts Directory
+
+By default, all outputs (models, reports, plots) are saved to `artifacts/` in the project root. This directory is created automatically at runtime.
+
+## Troubleshooting
+
+### Import Errors
+
+**Problem**: `ModuleNotFoundError` when running CLI scripts
+
+**Solution**: Ensure you're running commands as modules from the project root:
+
+```bash
+# Correct
+python -m research.train_cli --model knn --dataset digits
+
+# Incorrect
+python research/train_cli.py --model knn --dataset digits
+```
+
+### TensorFlow Installation Issues
+
+**Problem**: TensorFlow fails to install or shows warnings
+
+**Solution**: The project only uses TensorFlow for dataset loading. If you encounter issues:
+
+1. Use the `digits` dataset exclusively (no TensorFlow data loading needed)
+2. Install a CPU-only version: `pip install tensorflow-cpu`
+3. Or manually load MNIST from alternative sources
+
+### ONNX Runtime Errors
+
+**Problem**: `onnxruntime` fails to load or validate models
+
+**Solution**: Ensure you have the correct version for your platform:
+
+```bash
+# For CPU-only inference
+pip install onnxruntime
+
+# For GPU support (if needed)
+pip install onnxruntime-gpu
+```
+
+### Memory Issues During Training
+
+**Problem**: Out-of-memory errors with large datasets
+
+**Solution**: Reduce the sample size:
+
+```bash
+python -m research.train_cli --model knn --dataset mnist --sample-size 1000
+```
+
+The default sample size is 6,000. Adjust based on your available RAM.
+
+### Scikit-learn Version Compatibility
+
+**Problem**: ONNX export fails with version mismatch warnings
+
+**Solution**: Ensure compatible versions:
+
+```bash
+pip install --upgrade scikit-learn skl2onnx
+```
+
+The project is tested with scikit-learn 1.0+ and skl2onnx 1.12+.
+
+## Offline Usage
+
+For completely offline environments:
+
+<Steps>
+
+### Download Dependencies
+
+On a machine with network access, download all packages:
+
+```bash
+pip download -r requirements.txt -d ./packages
+```
+
+### Transfer to Offline Machine
+
+Copy the `packages/` directory to your offline environment.
+
+### Install from Local Packages
+
+```bash
+pip install --no-index --find-links=./packages -r requirements.txt
+```
+
+### Use Digits Dataset Only
+
+Always specify `--dataset digits` to avoid network calls:
+
+```bash
+python -m research.train_cli --model knn --dataset digits
+python -m research.evaluate_cli --model rf --dataset digits --runs 5
+python -m research.infer_cli --model knn --dataset digits --export-onnx
+```
+
+</Steps>
+
+## Validation
+
+Verify your installation is complete by running all three CLI tools:
+
+<CodeGroup>
+
+```bash Training
+python -m research.train_cli --model knn --dataset digits --run-compression
+```
+
+```bash Evaluation
+python -m research.evaluate_cli --model rf --dataset digits --runs 3
+```
+
+```bash Inference
+python -m research.infer_cli --model knn --dataset digits --export-onnx
+```
+
+</CodeGroup>
+
+If all three commands complete without errors, your installation is ready.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first experiments
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/api/train-cli">
+    Complete command-line documentation
+  </Card>
+  <Card title="Configuration" icon="gear" href="/api/config">
+    Customize training and compression settings
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understanding the codebase structure
+  </Card>
+</CardGroup>

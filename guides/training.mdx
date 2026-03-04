@@ -1,0 +1,276 @@
+---
+title: 'Training Workflow'
+description: 'Train KNN and Random Forest models with compression and quantization experiments'
+icon: 'brain'
+---
+
+## Overview
+
+The training workflow uses `train_cli.py` to train handwritten digit classifiers with support for compression and quantization experiments. This guide covers all command-line options and real-world usage patterns.
+
+## Command Line Options
+
+### Model Selection
+
+Choose between KNN and Random Forest classifiers:
+
+<CodeGroup>
+```bash KNN (default)
+python source/research/train_cli.py --model knn
+```
+
+```bash Random Forest
+python source/research/train_cli.py --model rf
+```
+</CodeGroup>
+
+### Dataset Selection
+
+Train on MNIST or scikit-learn digits dataset:
+
+<CodeGroup>
+```bash MNIST (default)
+python source/research/train_cli.py --dataset mnist
+```
+
+```bash Digits
+python source/research/train_cli.py --dataset digits
+```
+</CodeGroup>
+
+<Info>MNIST provides 70,000 samples (28x28 images), while digits provides 1,797 samples (8x8 images) for faster prototyping.</Info>
+
+### Reproducibility with Seeding
+
+Control randomness for reproducible experiments:
+
+```bash
+python source/research/train_cli.py --seed 42
+```
+
+The seed affects:
+- Train/test splits
+- Random Forest random state
+- Data sampling
+
+### Sample Size Control
+
+Limit training samples for faster experiments:
+
+```bash
+python source/research/train_cli.py --sample-size 1000
+```
+
+<Warning>Default is 6000 samples. MNIST has 60,000 training samples available.</Warning>
+
+## Running Experiments
+
+### Basic Training
+
+Train a model and report accuracy:
+
+```bash
+python source/research/train_cli.py \
+  --model knn \
+  --dataset mnist \
+  --seed 40 \
+  --sample-size 6000
+```
+
+**Output:**
+```
+model=knn accuracy=0.965432
+```
+
+### Compression Experiments
+
+Run weight and neuron pruning experiments:
+
+```bash
+python source/research/train_cli.py \
+  --model knn \
+  --run-compression \
+  --weight-prune 0.3 \
+  --neuron-prune 0.15
+```
+
+<Accordion title="How Pruning Levels Work">
+- **Weight pruning (0.2)**: Prunes weights below the 20th percentile of absolute values
+- **Neuron pruning (0.1)**: Removes features below the 10th percentile of variance
+- Higher values = more aggressive compression
+</Accordion>
+
+**Source reference:** `train_cli.py:16-17`
+
+```python
+parser.add_argument("--weight-prune", type=float, default=0.2)
+parser.add_argument("--neuron-prune", type=float, default=0.1)
+```
+
+### Quantization Experiments
+
+Test float16 and int8 quantization:
+
+```bash
+python source/research/train_cli.py \
+  --model rf \
+  --run-quantization
+```
+
+<Info>Quantization reduces memory footprint by converting float64 to lower-precision formats.</Info>
+
+### Combined Workflow
+
+Run training, compression, and quantization in one command:
+
+```bash
+python source/research/train_cli.py \
+  --model knn \
+  --dataset mnist \
+  --seed 40 \
+  --sample-size 6000 \
+  --run-compression \
+  --weight-prune 0.25 \
+  --neuron-prune 0.12 \
+  --run-quantization
+```
+
+## Understanding Output Artifacts
+
+### Run Metadata
+
+Every training run exports metadata to `artifacts/run_metadata.json`:
+
+```json
+{
+  "system_config": {
+    "seed": 40,
+    "sample_size": 6000,
+    "dataset": "mnist"
+  },
+  "training_config": {
+    "model_name": "knn"
+  }
+}
+```
+
+**Source reference:** `train_cli.py:27`
+
+```python
+export_run_metadata(sys_cfg, tr_cfg)
+```
+
+### Compression Results
+
+When `--run-compression` is enabled, the output includes:
+
+```python
+compression={'weight_pruned': {...}, 'neuron_pruned': {...}}
+```
+
+### Quantization Results
+
+When `--run-quantization` is enabled:
+
+```python
+quantization={'float16': {...}, 'int8_sim': {...}}
+```
+
+## Real-World Examples
+
+<CardGroup cols={2}>
+  <Card title="Fast Prototyping" icon="rocket">
+    ```bash
+    python source/research/train_cli.py \
+      --dataset digits \
+      --sample-size 500 \
+      --model knn
+    ```
+    Quick iteration with small dataset
+  </Card>
+
+  <Card title="Full Experiment" icon="flask">
+    ```bash
+    python source/research/train_cli.py \
+      --model rf \
+      --dataset mnist \
+      --seed 42 \
+      --run-compression \
+      --run-quantization
+    ```
+    Complete evaluation pipeline
+  </Card>
+
+  <Card title="Compression Sweep" icon="filter">
+    ```bash
+    for w in 0.1 0.2 0.3; do
+      python source/research/train_cli.py \
+        --run-compression \
+        --weight-prune $w
+    done
+    ```
+    Parameter sweep for pruning levels
+  </Card>
+
+  <Card title="Reproducible Research" icon="repeat">
+    ```bash
+    python source/research/train_cli.py \
+      --seed 12345 \
+      --sample-size 5000 \
+      --model knn \
+      --dataset mnist
+    ```
+    Exact reproduction with fixed seed
+  </Card>
+</CardGroup>
+
+## Advanced Configuration
+
+### Fail-Fast Dataset Mode
+
+For debugging, load minimal data:
+
+```bash
+python source/research/train_cli.py --fail-fast-dataset
+```
+
+<Tip>This loads only a tiny subset for quick smoke tests during development.</Tip>
+
+### Source Code Reference
+
+The complete training pipeline is implemented in:
+
+- **CLI entrypoint**: `source/research/train_cli.py`
+- **Training logic**: `source/research/core/training/trainer.py`
+- **Config dataclasses**: `source/research/config.py`
+
+**Main execution flow** (`train_cli.py:28-38`):
+
+```python
+base = train_once(sys_cfg, tr_cfg)
+print(f"model={args.model} accuracy={base['metrics']['accuracy']:.6f}")
+
+if args.run_compression:
+    comp = CompressionConfig(weight_pruning_level=args.weight_prune, 
+                             neuron_pruning_level=args.neuron_prune)
+    out = run_compression(sys_cfg, tr_cfg, comp)
+    print(f"compression={out}")
+
+if args.run_quantization:
+    out = run_quantization(sys_cfg, tr_cfg, QuantizationConfig())
+    print(f"quantization={out}")
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Compression" icon="compress" href="/guides/compression">
+    Deep dive into pruning and quantization
+  </Card>
+  <Card title="Benchmarking" icon="chart-line" href="/guides/benchmarking">
+    Evaluate with confidence intervals
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Export to ONNX for production
+  </Card>
+</CardGroup>

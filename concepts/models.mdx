@@ -1,0 +1,345 @@
+---
+title: Model Families
+description: KNN and Random Forest architectures, parameters, and selection criteria
+---
+
+## Supported Models
+
+The system supports two classical machine learning models optimized for different edge deployment scenarios:
+
+<CardGroup cols={2}>
+  <Card title="K-Nearest Neighbors" icon="diagram-project">
+    Instance-based learning with distance-weighted voting
+  </Card>
+  <Card title="Random Forest" icon="tree">
+    Ensemble of decision trees with bagging
+  </Card>
+</CardGroup>
+
+## K-Nearest Neighbors (KNN)
+
+### Architecture
+
+KNN is an instance-based learning algorithm that stores all training examples and classifies new samples by majority voting among the k-nearest neighbors:
+
+```python compression/classical.py
+def build_model(config: TrainingConfig):
+    if config.model_name == "knn":
+        return KNeighborsClassifier(
+            n_neighbors=config.knn_neighbors,
+            weights=config.knn_weights,
+            algorithm=config.knn_algorithm,
+        )
+```
+
+### Parameters
+
+<ParamField path="knn_neighbors" type="int" default={4}>
+  Number of neighbors to consider for voting. Lower values create more complex decision boundaries.
+</ParamField>
+
+<ParamField path="knn_weights" type="str" default="distance">
+  Weight function for voting:
+  - `"uniform"`: All neighbors weighted equally
+  - `"distance"`: Closer neighbors have more influence (inverse distance weighting)
+</ParamField>
+
+<ParamField path="knn_algorithm" type="str" default="auto">
+  Algorithm for computing nearest neighbors:
+  - `"auto"`: Automatically selects best algorithm based on training data
+  - `"ball_tree"`: Uses BallTree data structure
+  - `"kd_tree"`: Uses KDTree data structure
+  - `"brute"`: Brute-force search
+</ParamField>
+
+### Example Configuration
+
+```python research/config.py
+@dataclass
+class TrainingConfig:
+    model_name: str = "knn"
+    knn_neighbors: int = 4
+    knn_weights: str = "distance"
+    knn_algorithm: str = "auto"
+```
+
+### Characteristics
+
+<AccordionGroup>
+  <Accordion title="Memory Footprint">
+    KNN stores the entire training dataset in memory. Memory usage scales linearly with:
+    - Number of training samples (`sample_size`)
+    - Feature dimensionality (784 for MNIST, 64 for digits)
+    - Precision (float32 = 4 bytes per feature)
+    
+    **Compression strategy**: Prototype reduction reduces reference set size while preserving class boundaries.
+  </Accordion>
+  
+  <Accordion title="Inference Speed">
+    Each prediction requires computing distances to all stored training examples:
+    - Time complexity: O(n × d) where n = training samples, d = dimensions
+    - Bottleneck for large training sets
+    - Tree-based algorithms (kd_tree, ball_tree) can accelerate lookup
+    
+    **Optimization**: Use `knn_algorithm="kd_tree"` for low-dimensional data (d < 20)
+  </Accordion>
+  
+  <Accordion title="Training Speed">
+    Effectively instant - KNN simply stores the training data without computation.
+  </Accordion>
+  
+  <Accordion title="Accuracy">
+    Strong performance on smooth decision boundaries. Distance-weighted voting improves robustness to outliers.
+  </Accordion>
+</AccordionGroup>
+
+## Random Forest (RF)
+
+### Architecture
+
+Random Forest is an ensemble of decision trees trained with bagging and random feature selection:
+
+```python compression/classical.py
+def build_model(config: TrainingConfig):
+    if config.model_name == "rf":
+        return RandomForestClassifier(
+            n_estimators=config.rf_n_estimators,
+            max_features=config.rf_max_features,
+            class_weight=config.rf_class_weight,
+            random_state=config.rf_random_state,
+            n_jobs=-1,
+        )
+```
+
+### Parameters
+
+<ParamField path="rf_n_estimators" type="int" default={500}>
+  Number of trees in the forest. More trees increase accuracy and memory but slow inference.
+</ParamField>
+
+<ParamField path="rf_max_features" type="str" default="sqrt">
+  Number of features considered for each split:
+  - `"sqrt"`: √(n_features) - recommended for classification
+  - `"log2"`: log₂(n_features)
+  - `"auto"`: Equivalent to "sqrt"
+  - float: Fraction of features
+  - int: Absolute number of features
+</ParamField>
+
+<ParamField path="rf_class_weight" type="str" default="balanced">
+  Class weighting strategy:
+  - `"balanced"`: Weights inversely proportional to class frequencies
+  - `"balanced_subsample"`: Balanced per bootstrap sample
+  - `None`: All classes weighted equally
+  - dict: Custom weights per class
+</ParamField>
+
+<ParamField path="rf_random_state" type="int" default={40}>
+  Seed for reproducible tree initialization and bootstrap sampling.
+</ParamField>
+
+### Example Configuration
+
+```python research/config.py
+@dataclass
+class TrainingConfig:
+    model_name: str = "rf"
+    rf_n_estimators: int = 500
+    rf_max_features: str = "sqrt"
+    rf_class_weight: str = "balanced"
+    rf_random_state: int = 40
+```
+
+### Characteristics
+
+<AccordionGroup>
+  <Accordion title="Memory Footprint">
+    Memory scales with ensemble size and tree depth:
+    - Total nodes = `rf_n_estimators` × avg_tree_nodes
+    - Tree depth grows with training set size (unless constrained)
+    - Can increase rapidly for large `rf_n_estimators`
+    
+    **Compression strategy**: Prune tree depth or reduce number of trees while monitoring accuracy.
+  </Accordion>
+  
+  <Accordion title="Inference Speed">
+    Each prediction traverses all trees:
+    - Time complexity: O(n_estimators × avg_tree_depth)
+    - Parallelizable across trees (use `n_jobs=-1`)
+    - Faster than KNN for large training sets
+    
+    **Optimization**: Balance `rf_n_estimators` vs accuracy requirements.
+  </Accordion>
+  
+  <Accordion title="Training Speed">
+    Training 500 trees can take seconds to minutes depending on dataset size. Fully parallelized with `n_jobs=-1`.
+  </Accordion>
+  
+  <Accordion title="Accuracy">
+    Excellent generalization and robustness to noise. Ensemble averaging reduces variance.
+  </Accordion>
+</AccordionGroup>
+
+## Model Selection Guide
+
+### When to Use KNN
+
+<Check>Small training datasets (< 10,000 samples)</Check>
+<Check>Low-dimensional feature spaces (< 100 dimensions)</Check>
+<Check>Training time is critical (near-instant)</Check>
+<Check>Smooth, continuous decision boundaries expected</Check>
+<Check>Online learning required (easy to add new samples)</Check>
+
+### When to Use Random Forest
+
+<Check>Large training datasets (> 10,000 samples)</Check>
+<Check>High-dimensional or noisy features</Check>
+<Check>Inference speed is critical</Check>
+<Check>Complex, non-linear decision boundaries</Check>
+<Check>Class imbalance present (use balanced class weights)</Check>
+
+## Performance Trade-offs
+
+<Tabs>
+  <Tab title="Memory">
+    | Model | Memory Scaling | Typical Size (MNIST 6k) |
+    |-------|----------------|-------------------------|
+    | KNN   | O(n × d)       | ~18 MB (6000 × 784 × 4 bytes) |
+    | RF    | O(trees × nodes) | ~10-50 MB (500 trees) |
+    
+    **Winner**: Depends on dataset size and tree complexity. RF typically more compact for large datasets.
+  </Tab>
+  
+  <Tab title="Inference Speed">
+    | Model | Complexity | Typical Latency (single) |
+    |-------|------------|-------------------------|
+    | KNN   | O(n × d)   | 5-50 ms (scales with n) |
+    | RF    | O(trees × depth) | 1-10 ms (constant w.r.t. n) |
+    
+    **Winner**: RF for large training sets, KNN for small datasets.
+  </Tab>
+  
+  <Tab title="Training Speed">
+    | Model | Complexity | Typical Training Time |
+    |-------|------------|-----------------------|
+    | KNN   | O(1)       | < 1 second |
+    | RF    | O(trees × n log n) | 10-60 seconds |
+    
+    **Winner**: KNN (near-instant).
+  </Tab>
+  
+  <Tab title="Accuracy">
+    | Dataset | KNN (k=4) | RF (500 trees) |
+    |---------|-----------|----------------|
+    | MNIST   | ~96-97%   | ~97-98%        |
+    | Digits  | ~97-98%   | ~98-99%        |
+    
+    **Winner**: RF typically 1-2% higher accuracy, especially with class imbalance.
+  </Tab>
+</Tabs>
+
+## Configuration From Code
+
+All model parameters are specified in `TrainingConfig`:
+
+```python research/config.py
+@dataclass
+class TrainingConfig:
+    model_name: str = "knn"  # or "rf"
+    
+    # KNN parameters
+    knn_neighbors: int = 4
+    knn_weights: str = "distance"
+    knn_algorithm: str = "auto"
+    
+    # Random Forest parameters
+    rf_n_estimators: int = 500
+    rf_max_features: str = "sqrt"
+    rf_class_weight: str = "balanced"
+    rf_random_state: int = 40
+```
+
+See the [Configuration Guide](/api/config) for CLI usage and override patterns.
+
+## Model Building
+
+Models are instantiated through the factory pattern:
+
+```python compression/classical.py
+def build_model(config: TrainingConfig):
+    if config.model_name == "knn":
+        return KNeighborsClassifier(
+            n_neighbors=config.knn_neighbors,
+            weights=config.knn_weights,
+            algorithm=config.knn_algorithm,
+        )
+    if config.model_name == "rf":
+        return RandomForestClassifier(
+            n_estimators=config.rf_n_estimators,
+            max_features=config.rf_max_features,
+            class_weight=config.rf_class_weight,
+            random_state=config.rf_random_state,
+            n_jobs=-1,
+        )
+    raise ValueError(f"Unsupported model_name={config.model_name}")
+```
+
+<Note>
+The factory pattern ensures all models are created with consistent configuration and enables easy addition of new model families.
+</Note>
+
+## Compression Strategies
+
+Both models support different compression approaches:
+
+<CardGroup cols={2}>
+  <Card title="KNN Compression" icon="compress">
+    **Prototype Reduction**: Reduce reference set size while preserving class-boundary fidelity
+    
+    **Trade-off**: Lower memory and faster inference vs potential accuracy loss
+  </Card>
+  
+  <Card title="RF Compression" icon="tree">
+    **Tree Pruning**: Reduce tree depth or number of estimators
+    
+    **Trade-off**: Lower latency and memory vs ensemble diversity
+  </Card>
+</CardGroup>
+
+See the [Compression Guide](/guides/compression) for detailed techniques.
+
+## Hardware Considerations
+
+<Warning>
+From `docs/system_design.md:29-41`:
+- KNN inference cost scales with reference set size and can dominate latency
+- RF memory footprint can increase rapidly with large ensemble sizes
+- Increasing sample size affects training and inference differently across model families
+</Warning>
+
+Use the [Benchmark Sweeps](/guides/benchmarking) to profile models under hardware constraints:
+
+```python research/config.py
+@dataclass
+class HardwareSimConfig:
+    memory_budget_mb: int = 8
+    compute_scale: float = 1.0
+    auto_batch_sizes: Tuple[int, ...] = (1, 8, 32, 64, 128)
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Datasets" icon="database" href="/concepts/datasets">
+    Learn about dataset loading and preprocessing
+  </Card>
+  <Card title="Training" icon="play" href="/guides/training">
+    Train and evaluate models
+  </Card>
+  <Card title="Compression" icon="compress" href="/guides/compression">
+    Apply pruning and quantization
+  </Card>
+  <Card title="Benchmarking" icon="gauge" href="/guides/benchmarking">
+    Profile under hardware constraints
+  </Card>
+</CardGroup>

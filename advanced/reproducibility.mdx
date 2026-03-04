@@ -1,0 +1,414 @@
+---
+title: Reproducibility
+description: Comprehensive guide to reproducibility strategies including explicit seeding, deterministic splits, and artifact capture
+---
+
+## Overview
+
+Reproducibility ensures that experiments produce identical results across runs, machines, and time. This framework implements multiple layers of determinism to enable reliable research and debugging.
+
+## Explicit Seeding Strategy
+
+### Core Implementation
+
+The `set_deterministic` function establishes a deterministic environment:
+
+```python
+def set_deterministic(seed: int) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    random.seed(seed)
+    np.random.seed(seed)
+```
+
+From `reproducibility.py:10-14`.
+
+### What Gets Seeded
+
+<Tabs>
+  <Tab title="Python Standard Library">
+    ```python
+    random.seed(seed)
+    ```
+    Controls `random.choice()`, `random.shuffle()`, `random.randint()`, etc.
+  </Tab>
+  <Tab title="NumPy">
+    ```python
+    np.random.seed(seed)
+    ```
+    Controls `np.random.randn()`, `np.random.choice()`, array sampling.
+  </Tab>
+  <Tab title="Hash Randomization">
+    ```python
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    ```
+    Ensures dictionary/set iteration order is deterministic across Python processes.
+  </Tab>
+  <Tab title="TensorFlow (if used)">
+    ```python
+    os.environ["TF_DETERMINISTIC_OPS"] = "1"
+    ```
+    Forces TensorFlow operations to use deterministic algorithms.
+  </Tab>
+</Tabs>
+
+<Warning>
+**Critical**: `set_deterministic()` must be called **before** any random operations, ideally at the start of each experiment run.
+</Warning>
+
+### Usage Example
+
+```python
+from research.core.utils.reproducibility import set_deterministic
+from research.config import SystemConfig
+
+config = SystemConfig(seed=40)
+set_deterministic(config.seed)
+
+# Now all downstream operations are deterministic
+x, y, metadata = load_dataset(config)
+x_train, x_test, y_train, y_test = split_and_normalize(x, y, config)
+```
+
+## Deterministic Splits
+
+### Train-Test Splitting
+
+Scikit-learn's `train_test_split` respects the numpy random seed:
+
+```python
+from sklearn.model_selection import train_test_split
+
+set_deterministic(seed=40)
+x_train, x_test, y_train, y_test = train_test_split(
+    x, y, 
+    test_size=0.3,
+    random_state=40,  # Must match seed for reproducibility
+    stratify=y         # Preserve class distribution
+)
+```
+
+<Info>
+The `random_state` parameter in scikit-learn functions should match your global seed to maintain consistency.
+</Info>
+
+### Dataset Sampling
+
+When reducing sample size:
+
+```python
+set_deterministic(seed=40)
+sample_indices = np.random.choice(
+    len(x), 
+    size=min(sample_size, len(x)), 
+    replace=False
+)
+x_sampled = x[sample_indices]
+y_sampled = y[sample_indices]
+```
+
+From `SystemConfig.sample_size` (config.py:9).
+
+## Artifact Capture
+
+### JSON Reports
+
+All experiments generate structured JSON artifacts:
+
+```python
+from research.core.utils.metrics import save_json
+
+report = {
+    "summary_version": "v2",
+    "model": "knn",
+    "accuracy": {"mean": 0.96, "std": 0.01, "ci95": 0.02},
+    "seed_schedule": [40, 41, 42, 43, 44]
+}
+
+save_json(report, Path("artifacts/experiment.json"))
+```
+
+### Report Structure
+
+From `benchmark.py:50-63`:
+
+```json
+{
+  "summary_version": "v2",
+  "model": "knn",
+  "runs": 5,
+  "seed_schedule": [40, 41, 42, 43, 44],
+  "sample_count_eval": 1800,
+  "accuracy": {
+    "mean": 0.9612,
+    "std": 0.0089,
+    "ci95": 0.0174
+  },
+  "inference_latency_s": {
+    "mean": 0.234,
+    "std": 0.012,
+    "ci95": 0.024
+  },
+  "training_time_s": {
+    "mean": 1.456,
+    "std": 0.078,
+    "ci95": 0.153
+  },
+  "throughput_samples_per_s": 7692.31,
+  "energy_per_inference_j": 0.00013
+}
+```
+
+<Note>
+The `seed_schedule` field records the exact seed used for each run, enabling precise replication.
+</Note>
+
+### Plot Artifacts
+
+Visualization functions generate reproducible plots:
+
+```python
+from research.core.utils.plots import plot_curve, plot_bar
+
+plot_curve(
+    x_values=[0.0, 0.2, 0.4, 0.6, 0.8],
+    y_values=[0.96, 0.95, 0.93, 0.89, 0.82],
+    title="Sparsity vs Accuracy",
+    xlabel="Sparsity Level",
+    ylabel="Accuracy",
+    output_path=Path("artifacts/sparsity_accuracy.png")
+)
+```
+
+Examples from `benchmark.py:208-231`.
+
+## Run Metadata Export
+
+### Runtime Manifest
+
+Capture complete environment context:
+
+```python
+def runtime_manifest(seed: int) -> Dict:
+    return {
+        "seed": int(seed),
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "pythonhashseed": os.environ.get("PYTHONHASHSEED", ""),
+        "tf_deterministic_ops": os.environ.get("TF_DETERMINISTIC_OPS", ""),
+    }
+```
+
+From `reproducibility.py:17-24`.
+
+### Example Manifest
+
+```json
+{
+  "seed": 40,
+  "python_version": "3.10.12 (main, Nov 20 2023, 15:14:05) [GCC 11.4.0]",
+  "platform": "Linux-5.15.0-91-generic-x86_64-with-glibc2.35",
+  "pythonhashseed": "40",
+  "tf_deterministic_ops": "1"
+}
+```
+
+<Tip>
+Include `runtime_manifest()` output in all experiment reports to document the execution environment.
+</Tip>
+
+## Comparing Experiment Runs
+
+### Seed Schedules for Multiple Runs
+
+Instead of a single seed, use a deterministic schedule:
+
+```python
+def repeated_benchmark(system_config: SystemConfig, training_config: TrainingConfig, runs: int = 5):
+    seeds = []
+    for i in range(runs):
+        seed = system_config.seed + i
+        seeds.append(seed)
+        set_deterministic(seed)
+        # Run experiment...
+    
+    return {"seed_schedule": seeds, ...}
+```
+
+From `benchmark.py:33-36`.
+
+### Statistical Aggregation
+
+Compute confidence intervals across runs:
+
+```python
+from research.core.utils.metrics import confidence_interval
+
+def _summary(values: Sequence[float], z: float) -> Dict[str, float]:
+    mean, std, ci = confidence_interval(values, z)
+    return {"mean": mean, "std": std, "ci95": ci}
+
+accs = [0.96, 0.95, 0.97, 0.96, 0.94]
+summary = _summary(accs, z=1.96)  # 95% confidence
+# {"mean": 0.956, "std": 0.0114, "ci95": 0.0224}
+```
+
+From `benchmark.py:21-23`.
+
+### Comparing Two Experiments
+
+```python
+import json
+
+with open("artifacts/baseline.json") as f:
+    baseline = json.load(f)
+
+with open("artifacts/compressed.json") as f:
+    compressed = json.load(f)
+
+print(f"Baseline accuracy: {baseline['accuracy']['mean']:.4f} ± {baseline['accuracy']['ci95']:.4f}")
+print(f"Compressed accuracy: {compressed['accuracy']['mean']:.4f} ± {compressed['accuracy']['ci95']:.4f}")
+
+if compressed['accuracy']['mean'] > baseline['accuracy']['mean'] - baseline['accuracy']['ci95']:
+    print("✓ Accuracy preserved within confidence interval")
+```
+
+## Real Examples from reproducibility.py
+
+### Example 1: Full Deterministic Setup
+
+```python
+from research.core.utils.reproducibility import set_deterministic, runtime_manifest
+from research.config import SystemConfig
+from research.core.data.dataset import load_dataset, split_and_normalize
+from compression.classical import build_model
+
+# Configure
+config = SystemConfig(seed=40, sample_size=6000, test_size=0.3)
+
+# Establish determinism
+set_deterministic(config.seed)
+manifest = runtime_manifest(config.seed)
+
+# Load and split (now deterministic)
+x, y, metadata = load_dataset(config)
+x_train, x_test, y_train, y_test = split_and_normalize(x, y, config)
+
+# Train (scikit-learn respects numpy seed)
+model = build_model(TrainingConfig(model_name="knn", rf_random_state=config.seed))
+model.fit(x_train, y_train)
+
+# Evaluate
+preds = model.predict(x_test)
+
+# Save with manifest
+result = {
+    "manifest": manifest,
+    "accuracy": float(accuracy_score(y_test, preds)),
+    "test_samples": len(x_test)
+}
+save_json(result, config.artifacts_dir / "experiment.json")
+```
+
+### Example 2: Multi-Run Reproducibility
+
+```python
+from benchmarks.benchmark import repeated_benchmark
+
+system_config = SystemConfig(seed=40)
+training_config = TrainingConfig(model_name="rf", rf_random_state=40)
+
+# Run 10 times with seeds 40, 41, ..., 49
+report = repeated_benchmark(system_config, training_config, runs=10)
+
+print(f"Accuracy: {report['accuracy']['mean']:.4f} ± {report['accuracy']['ci95']:.4f}")
+print(f"Seeds used: {report['seed_schedule']}")
+# Seeds used: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49]
+```
+
+### Example 3: Hardware Simulation Reproducibility
+
+```python
+from benchmarks.benchmark import pruning_hardware_experiment
+from research.config import HardwareSimConfig
+
+system_config = SystemConfig(seed=40)
+training_config = TrainingConfig(model_name="knn")
+hw_config = HardwareSimConfig(memory_budget_mb=8, compute_scale=0.5)
+
+# Deterministic sweep across sparsity levels
+report = pruning_hardware_experiment(
+    system_config=system_config,
+    training_config=training_config,
+    hw=hw_config,
+    sparsity_levels=(0.0, 0.2, 0.4, 0.6),
+    pruning_type="weight",
+    runs=5  # 5 seeds per sparsity level
+)
+
+# Each level has deterministic statistics
+for level in report["levels"]:
+    print(f"Sparsity {level['target_sparsity_level']}: "
+          f"Acc {level['accuracy']['mean']:.4f} ± {level['accuracy']['ci95']:.4f}")
+```
+
+## Reproducibility Checklist
+
+<Steps>
+  <Step title="Set Global Seed">
+    Call `set_deterministic(seed)` at the start of every experiment.
+  </Step>
+  <Step title="Configure Model Seeds">
+    Pass `random_state` or equivalent to all scikit-learn estimators:
+    ```python
+    TrainingConfig(rf_random_state=40)
+    ```
+  </Step>
+  <Step title="Use Stratified Splits">
+    Enable `stratify=y` in `train_test_split` to preserve class distributions.
+  </Step>
+  <Step title="Record Metadata">
+    Capture `runtime_manifest()` and `seed_schedule` in all reports.
+  </Step>
+  <Step title="Version Artifacts">
+    Include `summary_version` field to track report schema changes.
+  </Step>
+  <Step title="Compute Confidence Intervals">
+    Run experiments multiple times (3-10 runs) and report mean ± CI.
+  </Step>
+</Steps>
+
+## Limitations
+
+From `hardware_profiling.md:59-64`:
+
+> When reporting results:
+> 1. record exact CLI command,
+> 2. record seed and dataset choice,
+> 3. include confidence intervals across repeated runs,
+> 4. retain generated JSON and plot artifacts.
+
+<Warning>
+Deterministic settings can mask variance that appears in uncontrolled production settings (from `system_design.md:27`).
+</Warning>
+
+### Non-Deterministic Factors
+
+- **Hardware timing**: CPU scheduling and cache states introduce minor latency variance
+- **Network I/O**: Dataset downloads may vary in timing
+- **Floating-point non-associativity**: Some operations have platform-dependent rounding
+- **Multi-threading**: Parallel execution can introduce ordering non-determinism
+
+## Best Practices
+
+1. **Use consistent seeds**: Default to `seed=40` across all experiments
+2. **Run multiple times**: 5-10 runs for statistical robustness
+3. **Archive artifacts**: Store JSON reports and plots in version control or artifact stores
+4. **Document environment**: Include Python version, OS, and library versions
+5. **Test reproducibility**: Re-run experiments on different machines to verify consistency
+
+## Related
+
+- [Hardware Simulation](/advanced/hardware-simulation) - Reproducible hardware constraint experiments
+- [System Design](/advanced/system-design) - Design trade-offs affecting reproducibility
+- [Configuration](/api/config) - Seed and system configuration reference

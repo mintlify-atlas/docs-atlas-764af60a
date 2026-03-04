@@ -1,0 +1,407 @@
+---
+title: 'Model Compression'
+description: 'Reduce model size with pruning and quantization techniques'
+icon: 'compress'
+---
+
+## Overview
+
+Model compression reduces memory footprint and inference latency while maintaining accuracy. This guide covers weight pruning, neuron pruning, prototype reduction, and quantization simulation.
+
+## Weight Pruning
+
+Zero out low-magnitude weights to create sparse feature matrices.
+
+### How It Works
+
+<Steps>
+  <Step title="Calculate Threshold">
+    Compute the quantile of absolute weight values
+  </Step>
+  <Step title="Apply Mask">
+    Set values below threshold to zero
+  </Step>
+  <Step title="Measure Sparsity">
+    Calculate the fraction of zero weights
+  </Step>
+</Steps>
+
+### Implementation
+
+**Source:** `compression/compression.py:25-32`
+
+```python
+def weight_prune_features(x_train: np.ndarray, x_test: np.ndarray, level: float) -> PruningResult:
+    threshold = np.quantile(np.abs(x_train), level)
+    x_train_pruned = x_train.copy()
+    x_test_pruned = x_test.copy()
+    x_train_pruned[np.abs(x_train_pruned) < threshold] = 0.0
+    x_test_pruned[np.abs(x_test_pruned) < threshold] = 0.0
+    sparsity = float((x_train_pruned == 0.0).mean())
+    return PruningResult(x_train_pruned, x_test_pruned, 
+                         {"weight_threshold": float(threshold), "sparsity": sparsity})
+```
+
+### Usage Example
+
+```python
+from compression.compression import weight_prune_features
+
+# Prune 30% of lowest-magnitude weights
+result = weight_prune_features(x_train, x_test, level=0.3)
+print(f"Achieved sparsity: {result.stats['sparsity']:.2%}")
+print(f"Threshold: {result.stats['weight_threshold']:.6f}")
+```
+
+<Accordion title="Output Interpretation">
+```python
+PruningResult(
+    x_train=array([0., 0., 0.85, ...]),  # Sparse features
+    x_test=array([0., 0., 0.92, ...]),
+    stats={
+        'weight_threshold': 0.125432,
+        'sparsity': 0.347  # 34.7% of weights are zero
+    }
+)
+```
+</Accordion>
+
+### CLI Integration
+
+```bash
+python source/research/train_cli.py \
+  --run-compression \
+  --weight-prune 0.4
+```
+
+## Neuron Pruning
+
+Remove low-variance features (neurons) that contribute little to predictions.
+
+### How It Works
+
+<Steps>
+  <Step title="Compute Variance">
+    Calculate variance of each feature across training samples
+  </Step>
+  <Step title="Rank Features">
+    Identify features below variance threshold
+  </Step>
+  <Step title="Filter Columns">
+    Remove low-variance features from both train and test sets
+  </Step>
+</Steps>
+
+### Implementation
+
+**Source:** `compression/compression.py:35-42`
+
+```python
+def neuron_prune_features(x_train: np.ndarray, x_test: np.ndarray, level: float) -> PruningResult:
+    variances = x_train.var(axis=0)
+    cutoff = np.quantile(variances, level)
+    keep_mask = variances >= cutoff
+    x_train_pruned = x_train[:, keep_mask]
+    x_test_pruned = x_test[:, keep_mask]
+    sparsity = 1.0 - float(keep_mask.mean())
+    return PruningResult(x_train_pruned, x_test_pruned, 
+                         {"variance_cutoff": float(cutoff), 
+                          "feature_pruned_ratio": sparsity})
+```
+
+### Usage Example
+
+```python
+from compression.compression import neuron_prune_features
+
+# Remove 20% of lowest-variance features
+result = neuron_prune_features(x_train, x_test, level=0.2)
+print(f"Features removed: {result.stats['feature_pruned_ratio']:.2%}")
+print(f"Original shape: {x_train.shape}")
+print(f"Pruned shape: {result.x_train.shape}")
+```
+
+<Info>Neuron pruning reduces dimensionality, while weight pruning creates sparsity within existing dimensions.</Info>
+
+### CLI Integration
+
+```bash
+python source/research/train_cli.py \
+  --run-compression \
+  --neuron-prune 0.15
+```
+
+## KNN Prototype Reduction
+
+Reduce KNN training set size by removing redundant prototypes.
+
+### Algorithm
+
+<Steps>
+  <Step title="Find Nearest Neighbors">
+    For each training sample, find its 2 nearest neighbors
+  </Step>
+  <Step title="Score Redundancy">
+    Use distance to nearest neighbor as redundancy score
+  </Step>
+  <Step title="Remove Samples">
+    Remove samples with lowest redundancy scores (closest to others)
+  </Step>
+</Steps>
+
+### Implementation
+
+**Source:** `compression/compression.py:45-68`
+
+```python
+def knn_prototype_reduction(x_train: np.ndarray, y_train: np.ndarray, 
+                             reduction_level: float) -> ModelCompressionResult:
+    if reduction_level <= 0:
+        return ModelCompressionResult(None, x_train, y_train, 
+                                      {"prototype_kept_ratio": 1.0, 
+                                       "prototype_removed_ratio": 0.0})
+
+    nn = NearestNeighbors(n_neighbors=2, metric="euclidean")
+    nn.fit(x_train)
+    distances, _ = nn.kneighbors(x_train)
+    redundancy_score = distances[:, 1]  # Distance to nearest neighbor
+    
+    remove_n = int(len(x_train) * min(max(reduction_level, 0.0), 0.95))
+    remove_idx = np.argsort(redundancy_score)[:remove_n]
+    keep_mask = np.ones(len(x_train), dtype=bool)
+    keep_mask[remove_idx] = False
+
+    kept_ratio = float(keep_mask.mean())
+    return ModelCompressionResult(
+        None,
+        x_train[keep_mask],
+        y_train[keep_mask],
+        {
+            "prototype_kept_ratio": kept_ratio,
+            "prototype_removed_ratio": 1.0 - kept_ratio,
+            "median_redundancy_distance": float(np.median(redundancy_score)),
+        },
+    )
+```
+
+### Usage Example
+
+```python
+from compression.compression import knn_prototype_reduction
+
+# Remove 40% of training samples
+result = knn_prototype_reduction(x_train, y_train, reduction_level=0.4)
+print(f"Original samples: {len(x_train)}")
+print(f"Reduced samples: {len(result.x_train)}")
+print(f"Kept ratio: {result.stats['prototype_kept_ratio']:.2%}")
+```
+
+<Warning>Reduction levels above 0.6 may significantly degrade accuracy. Start with 0.2-0.4.</Warning>
+
+## Random Forest Pruning
+
+Simplify Random Forest trees using scikit-learn hyperparameters.
+
+### Pruning Parameters
+
+<ParamField path="max_depth" type="int | None">
+  Maximum tree depth (lower = simpler trees)
+</ParamField>
+
+<ParamField path="ccp_alpha" type="float">
+  Cost-complexity pruning parameter (higher = more pruning)
+</ParamField>
+
+<ParamField path="min_samples_leaf" type="int">
+  Minimum samples required at leaf nodes (higher = simpler trees)
+</ParamField>
+
+### Implementation
+
+**Source:** `compression/compression.py:71-85`
+
+```python
+def prune_random_forest(
+    rf_model: RandomForestClassifier,
+    max_depth: Optional[int],
+    ccp_alpha: float,
+    min_samples_leaf: int,
+) -> RandomForestClassifier:
+    params = rf_model.get_params()
+    params.update(
+        {
+            "max_depth": max_depth,
+            "ccp_alpha": max(0.0, float(ccp_alpha)),
+            "min_samples_leaf": max(1, int(min_samples_leaf)),
+        }
+    )
+    return clone(rf_model).set_params(**params)
+```
+
+### Usage Example
+
+```python
+from compression.compression import prune_random_forest
+from sklearn.ensemble import RandomForestClassifier
+
+rf = RandomForestClassifier(n_estimators=100)
+rf.fit(x_train, y_train)
+
+# Apply aggressive pruning
+rf_pruned = prune_random_forest(
+    rf, 
+    max_depth=10,
+    ccp_alpha=0.005,
+    min_samples_leaf=5
+)
+rf_pruned.fit(x_train, y_train)
+```
+
+## Quantization Simulation
+
+Reduce memory by converting to lower-precision data types.
+
+### Supported Modes
+
+<Tabs>
+  <Tab title="float16">
+    Converts float64 to 16-bit floating point
+    
+    ```python
+    q_train = x_train.astype(np.float16)
+    q_test = x_test.astype(np.float16)
+    ```
+    
+    **Memory savings:** 4x reduction
+  </Tab>
+  
+  <Tab title="int8_sim">
+    Simulates 8-bit integer quantization
+    
+    ```python
+    scale = np.max(np.abs(x_train)) / 127.0 + 1e-8
+    q_train = np.round(x_train / scale).astype(np.int8).astype(np.float32) * scale
+    ```
+    
+    **Memory savings:** 8x reduction (when serialized as int8)
+  </Tab>
+</Tabs>
+
+### Implementation
+
+**Source:** `compression/quantization.py:14-27`
+
+```python
+def quantize_dataset(x_train: np.ndarray, x_test: np.ndarray, mode: str) -> QuantizedData:
+    if mode == "float32":
+        q_train, q_test = x_train.astype(np.float32), x_test.astype(np.float32)
+    elif mode == "float16":
+        q_train, q_test = x_train.astype(np.float16), x_test.astype(np.float16)
+    elif mode == "int8_sim":
+        scale = np.max(np.abs(x_train)) / 127.0 + 1e-8
+        q_train = np.round(x_train / scale).astype(np.int8).astype(np.float32) * scale
+        q_test = np.round(x_test / scale).astype(np.int8).astype(np.float32) * scale
+    else:
+        raise ValueError(f"Unknown quantization mode: {mode}")
+
+    mem_train = q_train.nbytes / (1024 ** 2)
+    return QuantizedData(q_train, q_test, {"memory_train_mb": float(mem_train), "mode": mode})
+```
+
+### Usage Example
+
+```python
+from compression.quantization import quantize_dataset
+
+# Float16 quantization
+result_f16 = quantize_dataset(x_train, x_test, mode="float16")
+print(f"Memory: {result_f16.metrics['memory_train_mb']:.2f} MB")
+
+# Int8 simulation
+result_int8 = quantize_dataset(x_train, x_test, mode="int8_sim")
+print(f"Memory: {result_int8.metrics['memory_train_mb']:.2f} MB")
+```
+
+<Tip>int8_sim provides a simulation of int8 quantization. For true int8 inference, export to ONNX with quantization tools.</Tip>
+
+## Accuracy vs Size Trade-offs
+
+### Expected Performance
+
+<AccordionGroup>
+  <Accordion title="Weight Pruning (level=0.3)">
+    - **Sparsity:** 30-40%
+    - **Accuracy drop:** 0-2%
+    - **Memory savings:** 30-40% (with sparse storage)
+    - **Best for:** KNN and linear models
+  </Accordion>
+
+  <Accordion title="Neuron Pruning (level=0.2)">
+    - **Features removed:** 20%
+    - **Accuracy drop:** 1-3%
+    - **Memory savings:** 20%
+    - **Best for:** High-dimensional datasets with redundant features
+  </Accordion>
+
+  <Accordion title="Prototype Reduction (level=0.4)">
+    - **Samples removed:** 40%
+    - **Accuracy drop:** 2-5%
+    - **Memory savings:** 40%
+    - **Speedup:** 2-3x faster inference
+    - **Best for:** KNN models
+  </Accordion>
+
+  <Accordion title="Float16 Quantization">
+    - **Accuracy drop:** &lt;0.5%
+    - **Memory savings:** 50%
+    - **Best for:** All models, minimal risk
+  </Accordion>
+
+  <Accordion title="Int8 Quantization">
+    - **Accuracy drop:** 1-3%
+    - **Memory savings:** 75%
+    - **Best for:** Edge deployment with calibration
+  </Accordion>
+</AccordionGroup>
+
+## Combined Compression Pipeline
+
+Stack multiple techniques for maximum compression:
+
+```python
+from compression.compression import weight_prune_features, knn_prototype_reduction
+from compression.quantization import quantize_dataset
+
+# Stage 1: Weight pruning
+pruned = weight_prune_features(x_train, x_test, level=0.25)
+
+# Stage 2: Prototype reduction
+reduced = knn_prototype_reduction(pruned.x_train, y_train, reduction_level=0.3)
+
+# Stage 3: Quantization
+quantized = quantize_dataset(reduced.x_train, pruned.x_test, mode="float16")
+
+# Train on compressed data
+model = KNeighborsClassifier(n_neighbors=5)
+model.fit(quantized.x_train, reduced.y_train)
+
+print(f"Original samples: {len(x_train)}")
+print(f"Final samples: {len(quantized.x_train)}")
+print(f"Memory: {quantized.metrics['memory_train_mb']:.2f} MB")
+```
+
+<Note>Combine techniques carefully - stacking too many compression methods may lead to significant accuracy degradation.</Note>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Training" icon="brain" href="/guides/training">
+    Train models with compression
+  </Card>
+  <Card title="Benchmarking" icon="chart-line" href="/guides/benchmarking">
+    Measure compression impact
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Deploy compressed models
+  </Card>
+</CardGroup>

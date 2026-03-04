@@ -1,0 +1,252 @@
+---
+title: Introduction
+description: A compact engineering workflow for training, compressing, benchmarking, and deploying handwritten digit classifiers under resource constraints
+---
+
+<div className="relative overflow-hidden bg-gradient-to-br from-[#1e40af] via-[#2563eb] to-[#3b82f6] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#1e40af] py-20">
+  <div className="max-w-6xl mx-auto px-6 lg:px-8">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-6">
+          Handwritten Digit Classification
+        </h1>
+        <p className="text-lg sm:text-xl text-white/90 max-w-2xl mb-8">
+          Train, compress, benchmark, and deploy machine learning classifiers with deterministic reproducibility and resource-aware optimization
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart" 
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-white text-[#2563eb] font-semibold hover:bg-white/90 transition-colors no-underline"
+          >
+            Get Started
+            <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </a>
+          <a 
+            href="/api/train-cli" 
+            className="inline-flex items-center px-6 py-3 rounded-lg border-2 border-white/30 bg-white/10 text-white font-semibold hover:bg-white/20 transition-colors no-underline"
+          >
+            View API Reference
+          </a>
+        </div>
+      </div>
+      <div className="lg:col-span-5 hidden lg:block">
+        <div className="relative">
+          <div className="absolute inset-0 bg-gradient-to-br from-[#60a5fa]/20 to-[#3b82f6]/20 rounded-2xl blur-3xl"></div>
+          <div className="relative bg-[#1a1d27]/80 dark:bg-[#0f1117]/80 backdrop-blur-sm border border-white/10 rounded-2xl p-6">
+            <div className="text-xs text-gray-400 mb-2">$ python -m research.train_cli</div>
+            <div className="font-mono text-sm text-gray-300">
+              <div className="text-[#60a5fa]">--model</div> knn
+              <div className="text-[#60a5fa]">--dataset</div> digits
+              <div className="text-[#60a5fa]">--run-compression</div>
+            </div>
+            <div className="mt-4 pt-4 border-t border-white/10 text-sm text-gray-400">
+              <div className="text-green-400">✓ model=knn accuracy=0.982000</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Key Features
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Built for reproducible experimentation with resource-constrained deployment in mind
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
+    <Card title="Multiple Model Families" icon="brain" href="/concepts/models">
+      Train k-nearest neighbors (KNN) and random forest (RF) classifiers with deterministic seeding and artifact capture
+    </Card>
+    <Card title="Model Compression" icon="compress" href="/guides/compression">
+      Feature pruning, prototype reduction, and quantization simulation to reduce model size and inference cost
+    </Card>
+    <Card title="Hardware-Aware Benchmarking" icon="microchip" href="/guides/benchmarking">
+      Evaluate models under memory budgets and compute constraints with statistical confidence intervals
+    </Card>
+    <Card title="Production Deployment" icon="rocket" href="/guides/deployment">
+      Export to ONNX with parity validation and batch inference for CPU-oriented deployment
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+    Quick Start
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get up and running in minutes with a complete training and evaluation workflow
+  </p>
+
+  <Steps>
+    <Step title="Install dependencies">
+      Clone the repository and install required packages:
+      
+      ```bash
+      git clone https://github.com/RaviTejaMedarametla/classification-of-handwritten-digits1.git
+      cd classification-of-handwritten-digits1
+      pip install -r requirements.txt
+      ```
+    </Step>
+
+    <Step title="Train your first model">
+      Train a KNN classifier on the scikit-learn digits dataset:
+      
+      ```bash
+      python -m research.train_cli --model knn --dataset digits
+      ```
+      
+      <Note>
+        The `--dataset digits` option uses the built-in scikit-learn dataset, which doesn't require network access. For MNIST, use `--dataset mnist`.
+      </Note>
+    </Step>
+
+    <Step title="Run compression experiments">
+      Evaluate model compression with feature pruning and quantization:
+      
+      ```bash
+      python -m research.train_cli --model knn --dataset digits --run-compression --run-quantization
+      ```
+      
+      Results will be saved to the `artifacts/` directory as JSON files and plots.
+    </Step>
+
+    <Step title="Benchmark with hardware constraints">
+      Test model performance under memory and compute constraints:
+      
+      ```bash
+      python -m research.evaluate_cli --model rf --dataset digits --runs 5 --memory-budget-mb 8 --compute-scale 0.75
+      ```
+      
+      This runs 5 repeated experiments with confidence intervals and simulates an 8MB memory budget.
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+    Explore by Topic
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Deep dive into specific workflows and advanced features
+  </p>
+
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <a href="/guides/training" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#2563eb] dark:hover:border-[#2563eb] bg-white dark:bg-[#1a1d27] overflow-hidden transition-colors no-underline">
+      <div className="p-6">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-[#2563eb]/10 dark:bg-[#2563eb]/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-[#2563eb]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            </svg>
+          </div>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-white">Training Workflow</h3>
+        </div>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Learn how to configure training runs, select datasets, and generate reproducible results with deterministic seeding
+        </p>
+        <div className="flex items-center text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-[#2563eb] transition-colors">
+          Read the guide
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+
+    <a href="/guides/compression" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#2563eb] dark:hover:border-[#2563eb] bg-white dark:bg-[#1a1d27] overflow-hidden transition-colors no-underline">
+      <div className="p-6">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-[#2563eb]/10 dark:bg-[#2563eb]/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-[#2563eb]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+            </svg>
+          </div>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-white">Model Compression</h3>
+        </div>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Reduce model size and inference cost through weight pruning, neuron pruning, prototype reduction, and quantization
+        </p>
+        <div className="flex items-center text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-[#2563eb] transition-colors">
+          Read the guide
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+
+    <a href="/guides/benchmarking" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#2563eb] dark:hover:border-[#2563eb] bg-white dark:bg-[#1a1d27] overflow-hidden transition-colors no-underline">
+      <div className="p-6">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-[#2563eb]/10 dark:bg-[#2563eb]/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-[#2563eb]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </div>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-white">Benchmarking & Profiling</h3>
+        </div>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Run repeated experiments with confidence intervals and profile models under hardware constraints
+        </p>
+        <div className="flex items-center text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-[#2563eb] transition-colors">
+          Read the guide
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+
+    <a href="/guides/deployment" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#2563eb] dark:hover:border-[#2563eb] bg-white dark:bg-[#1a1d27] overflow-hidden transition-colors no-underline">
+      <div className="p-6">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-lg bg-[#2563eb]/10 dark:bg-[#2563eb]/20 flex items-center justify-center">
+            <svg className="w-5 h-5 text-[#2563eb]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+            </svg>
+          </div>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-white">Deployment & ONNX Export</h3>
+        </div>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Export models to ONNX format with parity validation and batch inference for production deployment
+        </p>
+        <div className="flex items-center text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-[#2563eb] transition-colors">
+          Read the guide
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+  </div>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="rounded-2xl bg-gradient-to-br from-[#2563eb] to-[#1e40af] dark:from-[#1a1d27] dark:to-[#1e40af] border border-[#2563eb]/20 dark:border-[#27272a] p-8 md:p-12">
+    <div className="max-w-3xl">
+      <h2 className="text-3xl font-bold text-white mb-4">
+        Ready to get started?
+      </h2>
+      <p className="text-lg text-white/90 mb-8">
+        Train your first model with reproducible experiments and resource-aware optimization
+      </p>
+      <a 
+        href="/quickstart" 
+        className="inline-flex items-center px-6 py-3 rounded-lg bg-white text-[#2563eb] font-semibold hover:bg-white/90 transition-colors no-underline"
+      >
+        View Quickstart Guide
+        <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</div>

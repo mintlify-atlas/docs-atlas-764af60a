@@ -1,0 +1,269 @@
+---
+title: "evaluate_cli"
+description: "Complete CLI reference for model evaluation and benchmarking"
+---
+
+## Overview
+
+The `research.evaluate_cli` module provides a command-line interface for comprehensive model evaluation, including repeated benchmarking, hardware simulation, pruning efficiency analysis, model compression experiments, and operator-level profiling.
+
+## Command Syntax
+
+```bash
+python -m research.evaluate_cli [OPTIONS]
+```
+
+## Arguments
+
+### Model Configuration
+
+<ParamField path="--model" type="string" default="knn">
+  Model type to evaluate.
+  
+  **Choices:** `knn`, `rf`
+  
+  - `knn`: K-Nearest Neighbors classifier
+  - `rf`: Random Forest classifier
+</ParamField>
+
+<ParamField path="--runs" type="int" default="5">
+  Number of repeated benchmark runs to perform. Used for statistical confidence intervals.
+</ParamField>
+
+### Dataset Configuration
+
+<ParamField path="--sample-size" type="int" default="6000">
+  Number of samples to use from the dataset for training and testing.
+</ParamField>
+
+<ParamField path="--dataset" type="string" default="mnist">
+  Dataset to use for evaluation.
+  
+  **Choices:** `mnist`, `digits`
+  
+  - `mnist`: Full MNIST handwritten digits dataset (70,000 samples)
+  - `digits`: Scikit-learn digits dataset (1,797 samples)
+</ParamField>
+
+<ParamField path="--seed" type="int" default="40">
+  Base random seed for reproducibility. Each run uses `seed + run_index`.
+</ParamField>
+
+<ParamField path="--fail-fast-dataset" type="boolean" default="false">
+  Enable fail-fast mode for dataset loading.
+  
+  **Flag:** Use `--fail-fast-dataset` to enable (no value required)
+</ParamField>
+
+### Hardware Simulation
+
+<ParamField path="--memory-budget-mb" type="int" default="8">
+  Memory budget in megabytes for hardware simulation constraints.
+</ParamField>
+
+<ParamField path="--compute-scale" type="float" default="1.0">
+  Compute scale factor for hardware simulation. Values < 1.0 simulate slower hardware.
+</ParamField>
+
+### Pruning Efficiency Experiment
+
+<ParamField path="--run-pruning-efficiency" type="boolean" default="false">
+  Run pruning efficiency experiment across multiple sparsity levels.
+  
+  **Flag:** Use `--run-pruning-efficiency` to enable (no value required)
+</ParamField>
+
+<ParamField path="--pruning-type" type="string" default="weight">
+  Type of pruning to apply in efficiency experiments.
+  
+  **Choices:** `weight`, `neuron`
+  
+  - `weight`: Weight-based feature pruning
+  - `neuron`: Variance-based neuron pruning
+</ParamField>
+
+<ParamField path="--sparsity-levels" type="string" default="0.0,0.2,0.4,0.6,0.8">
+  Comma-separated list of sparsity levels to test in pruning experiments.
+  
+  **Example:** `"0.1,0.3,0.5,0.7,0.9"`
+</ParamField>
+
+### Model Compression Experiment
+
+<ParamField path="--run-model-compression" type="boolean" default="false">
+  Run model-level compression experiment.
+  
+  **Flag:** Use `--run-model-compression` to enable (no value required)
+</ParamField>
+
+<ParamField path="--compression-levels" type="string" default="0.0,0.2,0.4,0.6">
+  Comma-separated list of compression levels to test.
+  
+  **Example:** `"0.0,0.25,0.5,0.75"`
+</ParamField>
+
+### Operator Profiling
+
+<ParamField path="--run-operator-profile" type="boolean" default="false">
+  Run operator-level profiling experiment.
+  
+  **Flag:** Use `--run-operator-profile` to enable (no value required)
+</ParamField>
+
+<ParamField path="--profile-batch-size" type="int" default="64">
+  Batch size to use for operator profiling.
+</ParamField>
+
+## Output Format
+
+The CLI prints results to stdout in the following format:
+
+### Core Outputs (Always Generated)
+
+```
+benchmark=<benchmark_stats_dict>
+hardware_sim={'batch_sizes': <list>, 'accuracy': <list>}
+```
+
+### Pruning Efficiency Output (if enabled)
+
+```
+pruning_efficiency=<report_dict>
+```
+
+### Operator Profile Output (if enabled)
+
+```
+operator_profile=<profile_dict>
+```
+
+### Model Compression Output (if enabled)
+
+```
+model_level_compression=<report_dict>
+```
+
+## Usage Examples
+
+### Basic Benchmarking
+
+Run repeated benchmarks with default settings:
+
+```bash
+python -m research.evaluate_cli
+```
+
+### Extended Benchmarking
+
+Run 10 repeated benchmarks for Random Forest:
+
+```bash
+python -m research.evaluate_cli --model rf --runs 10
+```
+
+### Pruning Efficiency Analysis
+
+Evaluate weight pruning efficiency across sparsity levels:
+
+```bash
+python -m research.evaluate_cli \
+  --model knn \
+  --run-pruning-efficiency \
+  --pruning-type weight \
+  --sparsity-levels "0.0,0.1,0.2,0.3,0.4,0.5"
+```
+
+### Neuron Pruning Analysis
+
+Evaluate neuron pruning efficiency:
+
+```bash
+python -m research.evaluate_cli \
+  --model rf \
+  --run-pruning-efficiency \
+  --pruning-type neuron \
+  --sparsity-levels "0.0,0.2,0.4,0.6,0.8"
+```
+
+### Hardware Simulation
+
+Simulate constrained hardware with limited memory:
+
+```bash
+python -m research.evaluate_cli \
+  --memory-budget-mb 4 \
+  --compute-scale 0.5
+```
+
+### Model Compression Experiment
+
+Evaluate model compression trade-offs:
+
+```bash
+python -m research.evaluate_cli \
+  --model knn \
+  --run-model-compression \
+  --compression-levels "0.0,0.2,0.4,0.6,0.8" \
+  --runs 5
+```
+
+### Operator Profiling
+
+Profile operator-level performance:
+
+```bash
+python -m research.evaluate_cli \
+  --model rf \
+  --run-operator-profile \
+  --profile-batch-size 128
+```
+
+### Complete Evaluation Suite
+
+Run all evaluation experiments:
+
+```bash
+python -m research.evaluate_cli \
+  --model knn \
+  --runs 10 \
+  --run-pruning-efficiency \
+  --run-model-compression \
+  --run-operator-profile \
+  --memory-budget-mb 8 \
+  --compute-scale 1.0
+```
+
+## Implementation Details
+
+### Workflow
+
+1. **Configuration**: Parses arguments and creates SystemConfig, TrainingConfig, HardwareSimConfig
+2. **Repeated Benchmark**: Runs multiple training iterations and collects statistics
+3. **Hardware Simulation**: Tests model performance under hardware constraints
+4. **Optional Experiments**:
+   - Pruning efficiency analysis across sparsity levels
+   - Operator-level profiling with latency breakdown
+   - Model compression experiments with size/accuracy trade-offs
+
+### Artifacts Generated
+
+All experiments save JSON reports and plots to the `artifacts_dir` (default: `artifacts/`):
+
+- `benchmark_<model>.json` - Repeated benchmark statistics
+- `hardware_sim_<model>.json` - Hardware simulation results
+- `resource_accuracy_<model>.png` - Resource vs accuracy plot
+- `pruning_efficiency_<model>_<type>.json` - Pruning experiment results
+- `sparsity_vs_accuracy_<model>_<type>.png` - Sparsity plots
+- `operator_profile_<model>.json` - Operator profiling results
+- `model_level_compression_<model>.json` - Compression experiment results
+
+## Source Location
+
+`research/evaluate_cli.py:17`
+
+## Related
+
+- [Benchmarking](/api/benchmarking) - Core benchmarking functions
+- [Config Reference](/api/config) - Configuration classes
+- [Train CLI](/api/train-cli) - Training CLI
+- [Compression](/api/compression) - Compression functions

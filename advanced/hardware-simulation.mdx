@@ -1,0 +1,251 @@
+---
+title: Hardware Simulation
+description: Simulate and evaluate model performance under hardware constraints including memory budgets and compute limitations
+---
+
+## Overview
+
+The hardware simulation framework allows you to evaluate model behavior under constrained resource scenarios. This is critical for understanding deployment feasibility on edge devices, embedded systems, or resource-limited environments.
+
+## Memory Budget Constraints
+
+Memory budgets define the maximum RAM available for inference operations. The system uses this constraint to determine feasible batch sizes and predict out-of-memory scenarios.
+
+### Configuration
+
+Set memory budgets in `HardwareSimConfig`:
+
+```python
+from research.config import HardwareSimConfig
+
+hw_config = HardwareSimConfig(
+    memory_budget_mb=8,  # 8 MB memory limit
+    compute_scale=1.0,
+    auto_batch_sizes=(1, 8, 32, 64, 128)
+)
+```
+
+<Info>
+The `memory_budget_mb` parameter is particularly important for edge deployment scenarios where devices may have as little as 4-16 MB available for model inference.
+</Info>
+
+### Memory Calculation
+
+Memory consumption is calculated per batch:
+
+```python
+bytes_per_sample = feature_count * 4  # float32 = 4 bytes
+memory_required_mb = (batch_size * bytes_per_sample) / (1024 ** 2)
+```
+
+From `benchmark.py:78-79`:
+
+```python
+if (effective_batch * x_test.shape[1] * 4) / (1024 ** 2) > hw.memory_budget_mb:
+    effective_batch = max(1, int(hw.memory_budget_mb * (1024 ** 2) / (x_test.shape[1] * 4)))
+```
+
+## Compute Scaling Factors
+
+Compute scale represents the ratio between available computational throughput and a reference baseline. Use values:
+
+- `1.0` = baseline CPU performance
+- `0.5` = half-speed processor (low-power mode)
+- `2.0` = accelerated compute (GPU, optimized kernels)
+
+### Effective Batch Size Calculation
+
+The system computes the maximum viable batch size considering both memory and compute constraints:
+
+```python
+def _effective_batch_size(feature_count: int, hw: HardwareSimConfig) -> int:
+    bytes_per_sample = max(feature_count, 1) * 4
+    budget_bytes = hw.memory_budget_mb * 1024 ** 2
+    memory_cap = max(1, int(budget_bytes / bytes_per_sample))
+    compute_cap = max(1, int(memory_cap * hw.compute_scale))
+    return min(memory_cap, compute_cap)
+```
+
+<Warning>
+Batch size is capped by the **minimum** of memory and compute constraints. A large memory budget won't help if compute scale limits throughput.
+</Warning>
+
+## Batch Size Calculation
+
+### Auto Batch Sizes
+
+The `auto_batch_sizes` tuple defines candidate batch sizes to sweep during simulation:
+
+```python
+HardwareSimConfig(
+    auto_batch_sizes=(1, 8, 32, 64, 128)
+)
+```
+
+For each candidate:
+1. Apply compute scaling: `effective_batch = batch * compute_scale`
+2. Check memory feasibility
+3. Adjust downward if memory budget exceeded
+4. Evaluate model accuracy at that batch size
+
+### Practical Example
+
+From `benchmark.py:76-84`:
+
+```python
+for batch in hw.auto_batch_sizes:
+    effective_batch = max(1, int(batch * hw.compute_scale))
+    if (effective_batch * x_test.shape[1] * 4) / (1024 ** 2) > hw.memory_budget_mb:
+        effective_batch = max(1, int(hw.memory_budget_mb * (1024 ** 2) / (x_test.shape[1] * 4)))
+    subset = x_test[:effective_batch]
+    preds = model.predict(subset)
+    acc = accuracy_score(y_test[:effective_batch], preds)
+    resource.append(effective_batch)
+    accuracy.append(float(acc))
+```
+
+## Hardware Simulation Methodology
+
+### Running a Simulation
+
+```python
+from research.config import SystemConfig, TrainingConfig, HardwareSimConfig
+from benchmarks.benchmark import hardware_simulation
+
+system_config = SystemConfig(seed=40, dataset="mnist")
+training_config = TrainingConfig(model_name="knn")
+hw_config = HardwareSimConfig(
+    memory_budget_mb=8,
+    compute_scale=0.5,  # Low-power CPU
+    auto_batch_sizes=(1, 4, 8, 16, 32)
+)
+
+resource, accuracy = hardware_simulation(system_config, training_config, hw_config)
+```
+
+### Output Artifacts
+
+The simulation generates:
+
+1. **JSON Report**: `hardware_sim_{model_name}.json`
+   ```json
+   {
+     "effective_batch_sizes": [1, 4, 8, 8, 8],
+     "accuracy": [0.94, 0.96, 0.97, 0.97, 0.97]
+   }
+   ```
+
+2. **Plot**: `resource_accuracy_{model_name}.png` showing batch size vs accuracy curve
+
+<Note>
+Notice how batch sizes plateau when memory budget is exceeded—larger requested batches map to the same effective batch size.
+</Note>
+
+## Limitations and Assumptions
+
+### Assumptions
+
+From `system_design.md:49-53`:
+
+- **Input features are numeric** and can be normalized without domain loss
+- **CPU inference is the primary baseline** for comparison
+- **Performance estimates are relative indicators** across configurations
+- **Float32 precision** is assumed for memory calculations (4 bytes per feature)
+
+### Limitations
+
+From `system_design.md:55-59`:
+
+- No distributed training/inference orchestration
+- No automatic artifact retention policy
+- No cycle-level hardware simulator integration
+- CPU-centric assumptions can under-represent accelerator behavior (line 25)
+
+### Key Constraints
+
+<Warning>
+Hardware simulation is **analytical**, not cycle-accurate. It models first-order effects (memory capacity, batch throughput) but cannot predict:
+
+- Cache hierarchy effects
+- Memory bandwidth bottlenecks
+- Pipeline stalls
+- Branch misprediction penalties
+</Warning>
+
+From `hardware_profiling.md:37`:
+
+> These are comparative heuristics, not hardware counters.
+
+## Real Examples from HardwareSimConfig
+
+### Example 1: Edge Device Simulation
+
+```python
+# Raspberry Pi 4 Model B (1GB variant)
+edge_config = HardwareSimConfig(
+    memory_budget_mb=128,  # Conservative estimate
+    compute_scale=0.3,     # ARM Cortex-A72 vs x86 baseline
+    auto_batch_sizes=(1, 2, 4, 8, 16)
+)
+```
+
+### Example 2: Mobile Device
+
+```python
+# Mid-range smartphone
+mobile_config = HardwareSimConfig(
+    memory_budget_mb=256,
+    compute_scale=0.7,
+    auto_batch_sizes=(1, 8, 16, 32)
+)
+```
+
+### Example 3: Microcontroller
+
+```python
+# ESP32 with external RAM
+micro_config = HardwareSimConfig(
+    memory_budget_mb=4,
+    compute_scale=0.1,
+    auto_batch_sizes=(1,)  # Likely limited to single-sample inference
+)
+```
+
+## Integration with Compression Experiments
+
+Combine hardware constraints with pruning experiments:
+
+```python
+from benchmarks.benchmark import pruning_hardware_experiment
+
+report = pruning_hardware_experiment(
+    system_config=system_config,
+    training_config=training_config,
+    hw=hw_config,
+    sparsity_levels=(0.0, 0.2, 0.4, 0.6, 0.8),
+    pruning_type="weight",
+    runs=5
+)
+```
+
+This evaluates how compression affects accuracy **under hardware constraints**, producing:
+
+- `effective_batch_size` per sparsity level
+- `eval_memory_mb` and `model_memory_mb` metrics
+- Latency and throughput at each constraint level
+
+See `benchmark.py:124-232` for implementation details.
+
+## Best Practices
+
+1. **Start with conservative budgets** (4-8 MB) to identify worst-case behavior
+2. **Use compute_scale < 1.0** for embedded ARM targets
+3. **Include batch_size=1** in auto_batch_sizes for single-sample latency
+4. **Compare against baseline** (no constraints) to quantify degradation
+5. **Validate on target hardware**—simulation provides relative guidance, not absolute guarantees
+
+## Related
+
+- [System Design](/advanced/system-design) - Architecture overview and design trade-offs
+- [Reproducibility](/advanced/reproducibility) - Ensuring consistent simulation results
+- [Benchmarking](/guides/benchmarking) - Running performance experiments

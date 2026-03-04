@@ -1,0 +1,259 @@
+---
+title: "infer_cli"
+description: "Complete CLI reference for inference and ONNX deployment pipeline"
+---
+
+## Overview
+
+The `research.infer_cli` module provides a command-line interface for running batch inference, exporting models to ONNX format, and validating ONNX model parity with scikit-learn models.
+
+## Command Syntax
+
+```bash
+python -m research.infer_cli [OPTIONS]
+```
+
+## Arguments
+
+### Model Configuration
+
+<ParamField path="--model" type="string" default="knn">
+  Model type to train and deploy.
+  
+  **Choices:** `knn`, `rf`
+  
+  - `knn`: K-Nearest Neighbors classifier
+  - `rf`: Random Forest classifier
+</ParamField>
+
+<ParamField path="--batch-size" type="int" default="64">
+  Batch size for CPU inference. Controls how many samples are processed at once.
+</ParamField>
+
+### Dataset Configuration
+
+<ParamField path="--dataset" type="string" default="mnist">
+  Dataset to use for inference.
+  
+  **Choices:** `mnist`, `digits`
+  
+  - `mnist`: Full MNIST handwritten digits dataset (70,000 samples)
+  - `digits`: Scikit-learn digits dataset (1,797 samples)
+</ParamField>
+
+<ParamField path="--seed" type="int" default="40">
+  Random seed for reproducibility. Controls dataset splitting and model initialization.
+</ParamField>
+
+<ParamField path="--fail-fast-dataset" type="boolean" default="false">
+  Enable fail-fast mode for dataset loading.
+  
+  **Flag:** Use `--fail-fast-dataset` to enable (no value required)
+</ParamField>
+
+### ONNX Export
+
+<ParamField path="--export-onnx" type="boolean" default="false">
+  Export the trained model to ONNX format and validate parity.
+  
+  **Flag:** Use `--export-onnx` to enable (no value required)
+  
+  **Requirements:** Requires `skl2onnx` and `onnxruntime` packages.
+</ParamField>
+
+<ParamField path="--onnx-min-agreement" type="float" default="0.98">
+  Minimum agreement threshold between ONNX and scikit-learn predictions.
+  
+  If agreement falls below this threshold, the CLI exits with an error.
+</ParamField>
+
+### Model Persistence
+
+<ParamField path="--save-model" type="boolean" default="false">
+  Save the trained model to disk using joblib.
+  
+  **Flag:** Use `--save-model` to enable (no value required)
+  
+  **Output location:** `artifacts/<model>_model.joblib`
+</ParamField>
+
+## Output Format
+
+The CLI prints results to stdout in the following format:
+
+### Batch Inference Output (Always Generated)
+
+```
+batch_predictions=<number_of_predictions>
+```
+
+**Example:**
+```
+batch_predictions=1800
+```
+
+### Model Saving Output (if enabled)
+
+```
+saved_model=<path_to_model>
+```
+
+**Example:**
+```
+saved_model=artifacts/knn_model.joblib
+```
+
+### ONNX Export Output (if enabled)
+
+```
+onnx_report={'agreement': <float>, 'parity_pass': <bool>, ...}
+```
+
+**Example:**
+```
+onnx_report={'agreement': 0.9994, 'parity_pass': True, 'sklearn_latency_s': 0.123, 'onnx_latency_s': 0.089, ...}
+```
+
+### ONNX Parity Failure (if parity check fails)
+
+The CLI exits with error code 1 and prints:
+
+```
+ONNX parity failed: agreement=<value> < threshold=<threshold>
+```
+
+## Usage Examples
+
+### Basic Inference
+
+Run batch inference with default settings:
+
+```bash
+python -m research.infer_cli
+```
+
+### Custom Batch Size
+
+Run inference with a larger batch size:
+
+```bash
+python -m research.infer_cli --batch-size 128
+```
+
+### Export to ONNX
+
+Train a model and export to ONNX format:
+
+```bash
+python -m research.infer_cli \
+  --model knn \
+  --export-onnx
+```
+
+### ONNX with Custom Threshold
+
+Export to ONNX with stricter parity requirements:
+
+```bash
+python -m research.infer_cli \
+  --model rf \
+  --export-onnx \
+  --onnx-min-agreement 0.995
+```
+
+### Save Model to Disk
+
+Train and save model for later use:
+
+```bash
+python -m research.infer_cli \
+  --model rf \
+  --save-model
+```
+
+### Complete Deployment Pipeline
+
+Train, save, and export to ONNX:
+
+```bash
+python -m research.infer_cli \
+  --model knn \
+  --batch-size 64 \
+  --save-model \
+  --export-onnx \
+  --onnx-min-agreement 0.98
+```
+
+### Different Dataset
+
+Run inference on the digits dataset:
+
+```bash
+python -m research.infer_cli \
+  --dataset digits \
+  --model rf \
+  --batch-size 32
+```
+
+### Reproducible Deployment
+
+Run with specific seed for reproducibility:
+
+```bash
+python -m research.infer_cli \
+  --seed 42 \
+  --model knn \
+  --export-onnx
+```
+
+## Implementation Details
+
+### Workflow
+
+1. **Configuration**: Parses arguments and creates SystemConfig, TrainingConfig, DeploymentConfig
+2. **Training**: Trains the model using `train_once()`
+3. **Batch Inference**: Runs batch inference on test set using CPU
+4. **Model Saving** (optional): Serializes model to joblib format if `--save-model` is set
+5. **ONNX Export** (optional): If `--export-onnx` is set:
+   - Converts model to ONNX format
+   - Validates ONNX model against scikit-learn predictions
+   - Saves validation report
+   - Exits with error if parity check fails
+
+### ONNX Configuration
+
+- **ONNX Opset**: Version 12 (configurable via `DeploymentConfig.onnx_opset`)
+- **Runtime Provider**: CPUExecutionProvider
+- **Input Type**: FloatTensorType with dynamic batch dimension
+
+### Artifacts Generated
+
+All artifacts are saved to `artifacts_dir` (default: `artifacts/`):
+
+- `<model>_model.joblib` - Serialized model (if `--save-model` enabled)
+- `<model>.onnx` - ONNX model file (if `--export-onnx` enabled)
+- `onnx_report_<model>.json` - ONNX validation report (if `--export-onnx` enabled)
+
+### Exit Codes
+
+- **0**: Success
+- **1**: ONNX parity check failed (agreement below threshold)
+
+## Dependencies
+
+Optional dependencies for ONNX export:
+
+```bash
+pip install skl2onnx onnxruntime
+```
+
+## Source Location
+
+`research/infer_cli.py:10`
+
+## Related
+
+- [Deployment](/api/deployment) - ONNX export and validation functions
+- [Config Reference](/api/config) - Configuration classes
+- [Train CLI](/api/train-cli) - Training CLI
+- [Evaluate CLI](/api/evaluate-cli) - Benchmarking CLI

@@ -1,0 +1,545 @@
+---
+title: 'Deployment'
+description: 'Export models to ONNX and run production inference'
+icon: 'rocket'
+---
+
+## Overview
+
+The deployment pipeline uses `infer_cli.py` to run batch inference, export models to ONNX format, validate parity, and save models for production. This guide covers the complete deployment workflow.
+
+## Command Line Options
+
+### Basic Configuration
+
+<ParamField path="--model" type="string" default="knn">
+  Model type: `knn` or `rf`
+</ParamField>
+
+<ParamField path="--batch-size" type="int" default="64">
+  Inference batch size for CPU
+</ParamField>
+
+<ParamField path="--dataset" type="string" default="mnist">
+  Dataset: `mnist` or `digits`
+</ParamField>
+
+<ParamField path="--seed" type="int" default="40">
+  Random seed for reproducibility
+</ParamField>
+
+### Export and Validation
+
+<ParamField path="--export-onnx" type="boolean">
+  Export model to ONNX format
+</ParamField>
+
+<ParamField path="--onnx-min-agreement" type="float" default="0.98">
+  Minimum parity threshold (0.0-1.0) between sklearn and ONNX predictions
+</ParamField>
+
+<ParamField path="--save-model" type="boolean">
+  Save trained model with joblib
+</ParamField>
+
+## Batch Inference on CPU
+
+Run inference in batches for memory efficiency.
+
+### Basic Usage
+
+```bash
+python source/research/infer_cli.py \
+  --model knn \
+  --batch-size 128 \
+  --dataset mnist
+```
+
+**Output:**
+```
+batch_predictions=10000
+```
+
+### Implementation
+
+**Source:** `deployment/onnx_pipeline.py:53-57`
+
+```python
+def batch_inference_cpu(model, x: np.ndarray, batch_size: int = 64):
+    outputs = []
+    for i in range(0, len(x), batch_size):
+        outputs.append(model.predict(x[i : i + batch_size]))
+    return np.concatenate(outputs)
+```
+
+### CLI Integration
+
+**Source:** `infer_cli.py:26-30`
+
+```python
+trained = train_once(sys_cfg, tr_cfg)
+model = trained["model"]
+_, x_test, _, _ = trained["data"]
+preds = batch_inference_cpu(model, x_test, batch_size=dep_cfg.batch_size)
+print(f"batch_predictions={len(preds)}")
+```
+
+<Info>Batch inference prevents memory spikes on large test sets by processing data in chunks.</Info>
+
+## ONNX Export Workflow
+
+Export scikit-learn models to ONNX for cross-platform deployment.
+
+### Prerequisites
+
+Install ONNX dependencies:
+
+```bash
+pip install skl2onnx onnxruntime
+```
+
+### Basic Export
+
+```bash
+python source/research/infer_cli.py \
+  --model knn \
+  --export-onnx
+```
+
+**Output:**
+```
+onnx_report={'agreement': 1.0, 'parity_pass': True, ...}
+```
+
+### Implementation
+
+**Source:** `deployment/onnx_pipeline.py:9-20`
+
+```python
+def export_to_onnx(model, sample_input: np.ndarray, out_path: Path, opset: int = 12) -> Path:
+    try:
+        from skl2onnx import convert_sklearn
+        from skl2onnx.common.data_types import FloatTensorType
+    except ImportError as exc:
+        raise RuntimeError("skl2onnx is required for ONNX export") from exc
+
+    initial_type = [("input", FloatTensorType([None, sample_input.shape[1]]))]
+    onx = convert_sklearn(model, initial_types=initial_type, target_opset=opset)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(onx.SerializeToString())
+    return out_path
+```
+
+### CLI Integration
+
+**Source:** `infer_cli.py:38-46`
+
+```python
+if args.export_onnx:
+    onnx_path = export_to_onnx(model, x_test[:1], 
+                               sys_cfg.artifacts_dir / f"{args.model}.onnx", 
+                               dep_cfg.onnx_opset)
+    report = validate_onnx(onnx_path, model, x_test, 
+                           min_agreement=dep_cfg.onnx_min_agreement)
+    save_deployment_report(report, 
+                          sys_cfg.artifacts_dir / f"onnx_report_{args.model}.json")
+    print(f"onnx_report={report}")
+    if not report["parity_pass"]:
+        raise SystemExit(
+            f"ONNX parity failed: agreement={report['agreement']:.5f} < threshold={dep_cfg.onnx_min_agreement:.5f}"
+        )
+```
+
+<Warning>Export will fail if `skl2onnx` or `onnxruntime` are not installed. Install them before running `--export-onnx`.</Warning>
+
+## Parity Validation
+
+Validate that ONNX and scikit-learn predictions match within acceptable tolerance.
+
+### Validation Process
+
+<Steps>
+  <Step title="Load ONNX Model">
+    Create ONNX Runtime inference session
+  </Step>
+  <Step title="Run Both Models">
+    Predict on test set with both sklearn and ONNX
+  </Step>
+  <Step title="Compare Predictions">
+    Calculate agreement rate (fraction of matching predictions)
+  </Step>
+  <Step title="Check Threshold">
+    Verify agreement >= `onnx_min_agreement`
+  </Step>
+</Steps>
+
+### Implementation
+
+**Source:** `deployment/onnx_pipeline.py:23-50`
+
+```python
+def validate_onnx(onnx_path: Path, sklearn_model, x_test: np.ndarray, 
+                   min_agreement: float = 0.98) -> Dict:
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError("onnxruntime is required for ONNX validation") from exc
+
+    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    input_name = sess.get_inputs()[0].name
+
+    sk_pred, sk_t = timed_call(sklearn_model.predict, x_test)
+
+    def _onnx_call(inp):
+        return sess.run(None, {input_name: inp.astype(np.float32)})[0]
+
+    onnx_pred, onnx_t = timed_call(_onnx_call, x_test)
+    if onnx_pred.ndim > 1:
+        onnx_pred = np.argmax(onnx_pred, axis=1)
+
+    agreement = float((onnx_pred == sk_pred).mean())
+    throughput = float(len(x_test) / max(onnx_t, 1e-9))
+    return {
+        "agreement": agreement,
+        "min_agreement": float(min_agreement),
+        "parity_pass": bool(agreement >= min_agreement),
+        "sklearn_latency_s": float(sk_t),
+        "onnx_latency_s": float(onnx_t),
+        "onnx_throughput_samples_per_s": throughput,
+    }
+```
+
+### Setting Parity Threshold
+
+```bash
+# Strict validation (99.5% agreement required)
+python source/research/infer_cli.py \
+  --export-onnx \
+  --onnx-min-agreement 0.995
+
+# Relaxed validation (95% agreement)
+python source/research/infer_cli.py \
+  --export-onnx \
+  --onnx-min-agreement 0.95
+```
+
+<Accordion title="Why Agreement < 1.0?">
+ONNX may use slightly different numerical precision or operator implementations, leading to minor differences in predictions. An agreement of 0.98-0.99 is typically acceptable for production.
+
+Factors affecting agreement:
+- Floating-point precision differences
+- Operator implementations (especially for distance calculations in KNN)
+- Rounding in conversion process
+</Accordion>
+
+### Validation Report
+
+**Artifact:** `artifacts/onnx_report_knn.json`
+
+```json
+{
+  "agreement": 0.9987,
+  "min_agreement": 0.98,
+  "parity_pass": true,
+  "sklearn_latency_s": 0.1234,
+  "onnx_latency_s": 0.0987,
+  "onnx_throughput_samples_per_s": 10132.45
+}
+```
+
+<Tip>ONNX inference is often faster than scikit-learn, especially on optimized runtimes.</Tip>
+
+## Saving Models with Joblib
+
+Serialize trained models for later use.
+
+### Basic Usage
+
+```bash
+python source/research/infer_cli.py \
+  --model knn \
+  --save-model
+```
+
+**Output:**
+```
+saved_model=artifacts/knn_model.joblib
+```
+
+### Implementation
+
+**Source:** `infer_cli.py:32-36`
+
+```python
+if args.save_model:
+    out = sys_cfg.artifacts_dir / f"{args.model}_model.joblib"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, out)
+    print(f"saved_model={out}")
+```
+
+### Loading Saved Models
+
+```python
+import joblib
+
+# Load saved model
+model = joblib.load("artifacts/knn_model.joblib")
+
+# Run inference
+predictions = model.predict(x_test)
+```
+
+<Info>Joblib is scikit-learn's preferred serialization format, offering better compression and speed than pickle.</Info>
+
+## Production Considerations
+
+### Deployment Checklist
+
+<AccordionGroup>
+  <Accordion title="Model Validation">
+    - [ ] ONNX parity >= 0.98
+    - [ ] Accuracy on validation set meets requirements
+    - [ ] Latency within acceptable bounds
+    - [ ] Memory footprint manageable
+  </Accordion>
+
+  <Accordion title="Environment Setup">
+    - [ ] ONNX Runtime installed (`pip install onnxruntime` or `onnxruntime-gpu`)
+    - [ ] Correct Python version (3.8+)
+    - [ ] Dependencies pinned in requirements.txt
+    - [ ] Test on target hardware (CPU/GPU)
+  </Accordion>
+
+  <Accordion title="Monitoring">
+    - [ ] Log prediction latencies
+    - [ ] Track inference errors
+    - [ ] Monitor memory usage
+    - [ ] Set up alerts for degraded performance
+  </Accordion>
+
+  <Accordion title="Optimization">
+    - [ ] Test different batch sizes for optimal throughput
+    - [ ] Consider model compression (see [Compression Guide](/guides/compression))
+    - [ ] Profile with operator-level tools (see [Benchmarking](/guides/benchmarking))
+    - [ ] Use ONNX Runtime optimizations (graph optimizations, quantization)
+  </Accordion>
+</AccordionGroup>
+
+### Batch Size Tuning
+
+Find optimal batch size for your hardware:
+
+```bash
+for bs in 16 32 64 128 256; do
+  echo "Testing batch size: $bs"
+  python source/research/infer_cli.py \
+    --model knn \
+    --batch-size $bs \
+    --export-onnx
+done
+```
+
+Analyze `onnx_throughput_samples_per_s` in reports to find the sweet spot.
+
+### ONNX Runtime Providers
+
+The default provider is `CPUExecutionProvider`. For GPU acceleration:
+
+```python
+import onnxruntime as ort
+
+# GPU inference
+sess = ort.InferenceSession(
+    "artifacts/knn.onnx",
+    providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+)
+```
+
+<Warning>GPU providers require `onnxruntime-gpu` and compatible CUDA/cuDNN versions.</Warning>
+
+### Production Inference Example
+
+```python
+import numpy as np
+import onnxruntime as ort
+from pathlib import Path
+
+class ProductionInference:
+    def __init__(self, onnx_path: Path, batch_size: int = 64):
+        self.session = ort.InferenceSession(
+            str(onnx_path),
+            providers=["CPUExecutionProvider"]
+        )
+        self.input_name = self.session.get_inputs()[0].name
+        self.batch_size = batch_size
+    
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        """Batch inference with error handling."""
+        outputs = []
+        for i in range(0, len(x), self.batch_size):
+            batch = x[i : i + self.batch_size].astype(np.float32)
+            pred = self.session.run(None, {self.input_name: batch})[0]
+            if pred.ndim > 1:
+                pred = np.argmax(pred, axis=1)
+            outputs.append(pred)
+        return np.concatenate(outputs)
+
+# Usage
+inference = ProductionInference(Path("artifacts/knn.onnx"), batch_size=128)
+predictions = inference.predict(x_test)
+```
+
+## Complete Deployment Workflow
+
+### Step-by-Step Example
+
+<Steps>
+  <Step title="Train and Export">
+    ```bash
+    python source/research/infer_cli.py \
+      --model knn \
+      --dataset mnist \
+      --seed 42 \
+      --export-onnx \
+      --onnx-min-agreement 0.98 \
+      --save-model
+    ```
+  </Step>
+
+  <Step title="Verify Artifacts">
+    ```bash
+    ls artifacts/
+    # knn.onnx
+    # knn_model.joblib
+    # onnx_report_knn.json
+    ```
+  </Step>
+
+  <Step title="Validate Report">
+    ```bash
+    cat artifacts/onnx_report_knn.json
+    # Check parity_pass: true
+    ```
+  </Step>
+
+  <Step title="Test Inference">
+    ```python
+    import onnxruntime as ort
+    import numpy as np
+    
+    sess = ort.InferenceSession("artifacts/knn.onnx")
+    input_name = sess.get_inputs()[0].name
+    
+    # Dummy input (784 features for MNIST)
+    x = np.random.randn(10, 784).astype(np.float32)
+    preds = sess.run(None, {input_name: x})[0]
+    print(preds)
+    ```
+  </Step>
+
+  <Step title="Deploy">
+    Copy `knn.onnx` to production environment and integrate with serving infrastructure.
+  </Step>
+</Steps>
+
+## Real-World Examples
+
+<CardGroup cols={2}>
+  <Card title="Quick Validation" icon="check">
+    ```bash
+    python source/research/infer_cli.py \
+      --model rf \
+      --export-onnx \
+      --onnx-min-agreement 0.99
+    ```
+    Fast export and validation
+  </Card>
+
+  <Card title="Production Export" icon="box">
+    ```bash
+    python source/research/infer_cli.py \
+      --model knn \
+      --dataset mnist \
+      --seed 12345 \
+      --export-onnx \
+      --save-model \
+      --batch-size 256
+    ```
+    Full pipeline with reproducibility
+  </Card>
+
+  <Card title="Batch Inference Only" icon="layer-group">
+    ```bash
+    python source/research/infer_cli.py \
+      --model knn \
+      --batch-size 512 \
+      --dataset digits
+    ```
+    Test batch inference without export
+  </Card>
+
+  <Card title="Strict Parity" icon="shield">
+    ```bash
+    python source/research/infer_cli.py \
+      --model rf \
+      --export-onnx \
+      --onnx-min-agreement 0.995
+    ```
+    Require 99.5% agreement
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### ONNX Export Fails
+
+<Accordion title="ImportError: No module named 'skl2onnx'">
+```bash
+pip install skl2onnx onnxruntime
+```
+</Accordion>
+
+<Accordion title="Conversion error for unsupported operator">
+Some scikit-learn models or hyperparameters may not be supported by skl2onnx. Check the [skl2onnx supported models](https://onnx.ai/sklearn-onnx/supported.html) list.
+</Accordion>
+
+### Parity Validation Fails
+
+<Accordion title="agreement < min_agreement">
+This is expected for some models due to numerical precision differences. Options:
+
+1. **Lower threshold**: `--onnx-min-agreement 0.95`
+2. **Investigate differences**: Compare predictions on a few samples
+3. **Check ONNX opset**: Default is 12, try `--onnx-opset 13`
+</Accordion>
+
+### Performance Issues
+
+<Accordion title="Slow ONNX inference">
+- Increase batch size: `--batch-size 256`
+- Use optimized ONNX Runtime providers
+- Profile with operator-level tools (see [Benchmarking](/guides/benchmarking))
+</Accordion>
+
+## Source Code Reference
+
+Complete deployment pipeline files:
+
+- **CLI entrypoint**: `source/research/infer_cli.py`
+- **ONNX utilities**: `source/deployment/onnx_pipeline.py`
+- **Config dataclasses**: `source/research/config.py` (DeploymentConfig)
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Training" icon="brain" href="/guides/training">
+    Train models for deployment
+  </Card>
+  <Card title="Compression" icon="compress" href="/guides/compression">
+    Compress before deployment
+  </Card>
+  <Card title="Benchmarking" icon="chart-line" href="/guides/benchmarking">
+    Validate production performance
+  </Card>
+</CardGroup>

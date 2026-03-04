@@ -1,0 +1,437 @@
+---
+title: Dataset Handling
+description: Dataset loading, fingerprinting, splitting, and normalization strategies
+---
+
+## Supported Datasets
+
+The system supports two digit classification datasets with different availability characteristics:
+
+<CardGroup cols={2}>
+  <Card title="MNIST" icon="cloud">
+    70,000 handwritten digit images (28×28 pixels)
+    
+    **Network-dependent**: Downloaded via TensorFlow
+  </Card>
+  <Card title="scikit-learn digits" icon="check">
+    1,797 digit images (8×8 pixels)
+    
+    **Offline-ready**: Bundled with scikit-learn
+  </Card>
+</CardGroup>
+
+## Dataset Loading
+
+### Load Function
+
+The `load_dataset` function handles both datasets with automatic fallback:
+
+```python research/core/data/dataset.py
+def load_dataset(config: SystemConfig):
+    if config.dataset == "mnist":
+        try:
+            (x_train, y_train), _ = tf.keras.datasets.mnist.load_data()
+            x = x_train.reshape(x_train.shape[0], 28 * 28).astype(np.float32)
+            y = y_train.astype(np.int64)
+            version = tf.__version__
+        except Exception as exc:
+            if config.fail_fast_dataset:
+                raise RuntimeError("MNIST download/load failed with fail-fast enabled") from exc
+            raise RuntimeError(
+                "MNIST download/load failed. Use --dataset digits for offline runs or --fail-fast-dataset for strict mode."
+            ) from exc
+    elif config.dataset == "digits":
+        ds = load_digits()
+        x = ds.data.astype(np.float32)
+        y = ds.target.astype(np.int64)
+        version = sklearn.__version__
+    else:
+        raise ValueError(f"Unsupported dataset={config.dataset}")
+
+    n = min(config.sample_size, len(x))
+    x, y = x[:n], y[:n]
+    metadata = {
+        "dataset": config.dataset,
+        "version": version,
+        "checksum_sha256": _dataset_checksum(x, y),
+        "source_samples": int(len(x)),
+    }
+    return x, y, metadata
+```
+
+### Configuration
+
+```python research/config.py
+@dataclass
+class SystemConfig:
+    seed: int = 40
+    sample_size: int = 6000
+    test_size: float = 0.3
+    normalize: bool = True
+    dataset: str = "mnist"  # or "digits"
+    fail_fast_dataset: bool = False
+    artifacts_dir: Path = Path("artifacts")
+    confidence_z: float = 1.96
+```
+
+<ParamField path="dataset" type="str" default="mnist">
+  Which dataset to load:
+  - `"mnist"`: TensorFlow MNIST (28×28, 70k samples, network required)
+  - `"digits"`: scikit-learn digits (8×8, 1797 samples, offline)
+</ParamField>
+
+<ParamField path="sample_size" type="int" default={6000}>
+  Number of samples to use from the dataset. Capped at dataset size.
+</ParamField>
+
+<ParamField path="fail_fast_dataset" type="bool" default={false}>
+  If `True`, raise error immediately if MNIST download fails. If `False`, show helpful error message suggesting `--dataset digits`.
+</ParamField>
+
+## MNIST Dataset
+
+### Characteristics
+
+<ResponseField name="Size" type="70,000 images">
+  60,000 training + 10,000 test (original split not used - we resplit)
+</ResponseField>
+
+<ResponseField name="Dimensions" type="28 × 28 pixels">
+  Grayscale images flattened to 784 features
+</ResponseField>
+
+<ResponseField name="Classes" type="10 digits">
+  0-9 digit labels
+</ResponseField>
+
+<ResponseField name="Network Required" type="Yes">
+  Downloaded via `tf.keras.datasets.mnist.load_data()`
+</ResponseField>
+
+### Loading MNIST
+
+```python research/core/data/dataset.py
+def load_mnist(config: SystemConfig):
+    x, y, _ = load_dataset(config)
+    return x, y
+```
+
+<Warning>
+From `docs/system_design.md:31`: Dataset loading can fail on MNIST when network/cache is unavailable.
+
+**Solution**: Use `--dataset digits` for offline runs or ensure network connectivity.
+</Warning>
+
+### Error Handling
+
+MNIST loading includes automatic error handling:
+
+```python
+try:
+    (x_train, y_train), _ = tf.keras.datasets.mnist.load_data()
+    # ... processing ...
+except Exception as exc:
+    if config.fail_fast_dataset:
+        raise RuntimeError("MNIST download/load failed with fail-fast enabled") from exc
+    raise RuntimeError(
+        "MNIST download/load failed. Use --dataset digits for offline runs or --fail-fast-dataset for strict mode."
+    ) from exc
+```
+
+## scikit-learn digits Dataset
+
+### Characteristics
+
+<ResponseField name="Size" type="1,797 images">
+  Smaller dataset suitable for quick experiments
+</ResponseField>
+
+<ResponseField name="Dimensions" type="8 × 8 pixels">
+  Grayscale images flattened to 64 features
+</ResponseField>
+
+<ResponseField name="Classes" type="10 digits">
+  0-9 digit labels
+</ResponseField>
+
+<ResponseField name="Network Required" type="No">
+  Bundled with scikit-learn - works offline
+</ResponseField>
+
+### Loading digits
+
+```python
+ds = load_digits()
+x = ds.data.astype(np.float32)
+y = ds.target.astype(np.int64)
+```
+
+<Check>
+**Recommended for offline environments** and rapid prototyping. Fully reproducible without network dependencies.
+</Check>
+
+## Dataset Fingerprinting
+
+### SHA-256 Checksums
+
+Every loaded dataset is fingerprinted with a SHA-256 checksum for reproducibility:
+
+```python research/core/data/dataset.py
+def _dataset_checksum(x: np.ndarray, y: np.ndarray) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(np.ascontiguousarray(x).tobytes())
+    hasher.update(np.ascontiguousarray(y).tobytes())
+    return hasher.hexdigest()
+```
+
+The checksum is computed over:
+- Feature matrix `x` (samples × features)
+- Label vector `y` (samples,)
+
+### Fingerprint Metadata
+
+```python research/core/data/dataset.py
+def dataset_fingerprint(x: np.ndarray, y: np.ndarray, metadata: Dict) -> Dict:
+    return {
+        "shape": list(x.shape),
+        "labels": sorted(list(map(int, np.unique(y)))),
+        "dtype": str(x.dtype),
+        "dataset": metadata["dataset"],
+        "version": metadata["version"],
+        "checksum_sha256": metadata["checksum_sha256"],
+    }
+```
+
+Fingerprints include:
+- `shape`: Array dimensions (samples, features)
+- `labels`: Unique class labels in sorted order
+- `dtype`: Data type (typically `float32`)
+- `dataset`: Dataset name (`"mnist"` or `"digits"`)
+- `version`: TensorFlow or scikit-learn version
+- `checksum_sha256`: SHA-256 hash of data
+
+### Artifact Persistence
+
+Fingerprints are saved to JSON for reproducibility verification:
+
+```python research/core/data/dataset.py
+def save_dataset_metadata(config: SystemConfig, x: np.ndarray, y: np.ndarray, metadata: Dict) -> Path:
+    path = config.artifacts_dir / "dataset_metadata.json"
+    payload = {"config": asdict(config), "fingerprint": dataset_fingerprint(x, y, metadata)}
+    payload["config"]["artifacts_dir"] = str(config.artifacts_dir)
+    save_json(payload, path)
+    return path
+```
+
+<Note>
+Checksum verification ensures identical input data across runs and detects any data corruption or version mismatches.
+</Note>
+
+## Train/Test Splitting
+
+### Stratified Split
+
+The system uses stratified train/test splitting to preserve class distributions:
+
+```python research/core/data/dataset.py
+def split_and_normalize(x: np.ndarray, y: np.ndarray, config: SystemConfig) -> Tuple[np.ndarray, ...]:
+    x_train, x_test, y_train, y_test = train_test_split(
+        x, y, test_size=config.test_size, random_state=config.seed, stratify=y
+    )
+    if config.normalize:
+        normalizer = Normalizer()
+        x_train = normalizer.fit_transform(x_train)
+        x_test = normalizer.transform(x_test)
+    return x_train, x_test, y_train, y_test
+```
+
+### Split Parameters
+
+<ParamField path="test_size" type="float" default={0.3}>
+  Fraction of data reserved for testing. Default 30% test, 70% train.
+</ParamField>
+
+<ParamField path="seed" type="int" default={40}>
+  Random seed for reproducible splitting. Same seed produces identical splits.
+</ParamField>
+
+<ParamField path="stratify" type="array">
+  Class labels for stratified splitting. Ensures each split has proportional class representation.
+</ParamField>
+
+### Example Split
+
+With `sample_size=6000` and `test_size=0.3`:
+
+```
+Total samples:    6000
+Train samples:    4200 (70%)
+Test samples:     1800 (30%)
+
+Class distribution preserved:
+- Class 0: ~600 total → ~420 train, ~180 test
+- Class 1: ~600 total → ~420 train, ~180 test
+...
+```
+
+<Check>
+**Stratification ensures balanced evaluation** even with imbalanced classes.
+</Check>
+
+## Normalization
+
+### L2 Normalization
+
+Features are normalized using L2 norm (Euclidean norm) to unit length:
+
+```python research/core/data/dataset.py
+if config.normalize:
+    normalizer = Normalizer()  # L2 norm by default
+    x_train = normalizer.fit_transform(x_train)
+    x_test = normalizer.transform(x_test)
+```
+
+### Why L2 Normalization?
+
+<AccordionGroup>
+  <Accordion title="Distance Metrics">
+    KNN uses distance metrics (Euclidean, Manhattan) that are sensitive to feature scale. L2 normalization ensures all samples have equal magnitude.
+  </Accordion>
+  
+  <Accordion title="Numerical Stability">
+    Prevents overflow/underflow in distance calculations and improves numerical precision.
+  </Accordion>
+  
+  <Accordion title="Model Convergence">
+    Random Forest benefits from normalized features for better split quality and tree balance.
+  </Accordion>
+</AccordionGroup>
+
+### Normalization Formula
+
+For each sample vector **x**:
+
+```
+x_normalized = x / ||x||₂
+
+where ||x||₂ = √(x₁² + x₂² + ... + xₙ²)
+```
+
+<Note>
+Normalizer is fit on training data only, then applied to test data to prevent data leakage.
+</Note>
+
+### Configuration
+
+<ParamField path="normalize" type="bool" default={true}>
+  Enable L2 normalization. Set to `False` to use raw pixel values.
+</ParamField>
+
+<Warning>
+From `docs/system_design.md:51`: The system assumes input features are numeric and can be normalized without domain loss. Non-numeric or categorical features are not supported.
+</Warning>
+
+## Data Flow Summary
+
+<Steps>
+  <Step title="Load Dataset">
+    Download or load from cache (MNIST) or use bundled data (digits)
+    
+    **Output**: `(x, y, metadata)` with shape `(samples, features)`
+  </Step>
+  
+  <Step title="Fingerprint">
+    Compute SHA-256 checksum and metadata
+    
+    **Output**: JSON artifact with checksum and version info
+  </Step>
+  
+  <Step title="Split">
+    Stratified train/test split with fixed seed
+    
+    **Output**: `(x_train, x_test, y_train, y_test)`
+  </Step>
+  
+  <Step title="Normalize">
+    L2 normalization fit on train, applied to test
+    
+    **Output**: Normalized feature matrices ready for training
+  </Step>
+</Steps>
+
+## Dataset Comparison
+
+<Tabs>
+  <Tab title="Size">
+    | Dataset | Train (70%) | Test (30%) | Features |
+    |---------|-------------|------------|----------|
+    | MNIST   | 4,200       | 1,800      | 784      |
+    | digits  | 1,258       | 539        | 64       |
+    
+    (Assuming `sample_size=6000` for MNIST, full dataset for digits)
+  </Tab>
+  
+  <Tab title="Availability">
+    | Dataset | Network Required | Cache Location | Offline Mode |
+    |---------|------------------|----------------|-------------|
+    | MNIST   | Yes (first run)  | `~/.keras/datasets/` | Use cached after first download |
+    | digits  | No               | Bundled with sklearn | Always available |
+  </Tab>
+  
+  <Tab title="Use Cases">
+    | Dataset | Best For |
+    |---------|----------|
+    | MNIST   | Production-like experiments, larger sample sizes, standard benchmarking |
+    | digits  | Rapid prototyping, offline environments, CI/CD pipelines, debugging |
+  </Tab>
+  
+  <Tab title="Performance">
+    | Dataset | Load Time | Training Time (RF) | Accuracy (KNN) |
+    |---------|-----------|-------------------|----------------|
+    | MNIST   | 1-5s (download) | 10-30s | ~96-97% |
+    | digits  | &lt;0.1s | 1-5s | ~97-98% |
+  </Tab>
+</Tabs>
+
+## Common Patterns
+
+### Quick Experiment (digits)
+
+```bash
+python -m research.train --dataset digits --sample-size 1797
+```
+
+<Check>Fast iteration for development and testing</Check>
+
+### Production Baseline (MNIST)
+
+```bash
+python -m research.train --dataset mnist --sample-size 6000
+```
+
+<Check>Standard configuration for benchmarking and comparison</Check>
+
+### Offline CI/CD
+
+```bash
+python -m research.train --dataset digits --fail-fast-dataset
+```
+
+<Check>Guarantees no network dependencies or silent fallbacks</Check>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand the full pipeline architecture
+  </Card>
+  <Card title="Models" icon="brain" href="/concepts/models">
+    Learn about KNN and Random Forest models
+  </Card>
+  <Card title="Training" icon="play" href="/guides/training">
+    Train models on your dataset
+  </Card>
+  <Card title="Configuration" icon="gear" href="/api/config">
+    Configure dataset parameters
+  </Card>
+</CardGroup>

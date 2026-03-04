@@ -1,0 +1,352 @@
+---
+title: "Deployment"
+description: "API reference for ONNX export and deployment functions"
+---
+
+## Overview
+
+The `deployment` module provides functions for exporting scikit-learn models to ONNX format, validating ONNX model parity, running batch inference, and saving deployment reports.
+
+## Dependencies
+
+ONNX functionality requires additional packages:
+
+```bash
+pip install skl2onnx onnxruntime
+```
+
+## Functions
+
+### export_to_onnx
+
+```python
+def export_to_onnx(
+    model,
+    sample_input: np.ndarray,
+    out_path: Path,
+    opset: int = 12
+) -> Path
+```
+
+Exports a scikit-learn model to ONNX format.
+
+**Parameters:**
+
+<ParamField path="model" type="object" required>
+  Trained scikit-learn model (e.g., KNeighborsClassifier or RandomForestClassifier).
+</ParamField>
+
+<ParamField path="sample_input" type="np.ndarray" required>
+  Sample input data used to infer input shape. Typically a single sample: `x_test[:1]`.
+  
+  Shape should be `(n_samples, n_features)`.
+</ParamField>
+
+<ParamField path="out_path" type="Path" required>
+  Output path for the ONNX model file.
+  
+  Parent directories are created automatically if they don't exist.
+</ParamField>
+
+<ParamField path="opset" type="int" default="12">
+  ONNX opset version. Higher versions support more operators but may have less compatibility.
+  
+  - `12`: Recommended for scikit-learn models
+  - `13-15`: Newer features, check compatibility
+</ParamField>
+
+**Returns:**
+
+`Path` object pointing to the created ONNX file.
+
+**Raises:**
+
+- `RuntimeError`: If `skl2onnx` package is not installed.
+
+**Example:**
+
+```python
+from deployment.onnx_pipeline import export_to_onnx
+from pathlib import Path
+import numpy as np
+from sklearn.neighbors import KNeighborsClassifier
+
+# Train a model
+knn = KNeighborsClassifier(n_neighbors=5)
+knn.fit(x_train, y_train)
+
+# Export to ONNX
+onnx_path = export_to_onnx(
+    model=knn,
+    sample_input=x_test[:1],  # Single sample for shape inference
+    out_path=Path("models/knn.onnx"),
+    opset=12
+)
+
+print(f"ONNX model saved to: {onnx_path}")
+print(f"File size: {onnx_path.stat().st_size / 1024:.1f} KB")
+```
+
+**Source:** `deployment/onnx_pipeline.py:9`
+
+---
+
+### validate_onnx
+
+```python
+def validate_onnx(
+    onnx_path: Path,
+    sklearn_model,
+    x_test: np.ndarray,
+    min_agreement: float = 0.98
+) -> Dict
+```
+
+Validates ONNX model by comparing predictions with the original scikit-learn model.
+
+**Parameters:**
+
+<ParamField path="onnx_path" type="Path" required>
+  Path to the ONNX model file.
+</ParamField>
+
+<ParamField path="sklearn_model" type="object" required>
+  Original trained scikit-learn model for comparison.
+</ParamField>
+
+<ParamField path="x_test" type="np.ndarray" required>
+  Test data for validation. The function compares predictions on this data.
+</ParamField>
+
+<ParamField path="min_agreement" type="float" default="0.98">
+  Minimum acceptable agreement rate (0.0 to 1.0) between ONNX and scikit-learn predictions.
+  
+  - `0.98`: Default, allows 2% disagreement
+  - `0.99`: Stricter validation
+  - `1.0`: Perfect agreement required
+</ParamField>
+
+**Returns:**
+
+Dictionary containing:
+
+- `agreement`: Fraction of matching predictions (0.0 to 1.0)
+- `min_agreement`: The minimum threshold provided
+- `parity_pass`: Boolean indicating if agreement >= min_agreement
+- `sklearn_latency_s`: Scikit-learn inference time in seconds
+- `onnx_latency_s`: ONNX inference time in seconds
+- `onnx_throughput_samples_per_s`: ONNX throughput
+
+**Raises:**
+
+- `RuntimeError`: If `onnxruntime` package is not installed.
+
+**Example:**
+
+```python
+from deployment.onnx_pipeline import export_to_onnx, validate_onnx
+from pathlib import Path
+from sklearn.ensemble import RandomForestClassifier
+
+# Train model
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(x_train, y_train)
+
+# Export to ONNX
+onnx_path = export_to_onnx(rf, x_test[:1], Path("models/rf.onnx"))
+
+# Validate
+report = validate_onnx(
+    onnx_path=onnx_path,
+    sklearn_model=rf,
+    x_test=x_test,
+    min_agreement=0.99
+)
+
+print(f"Agreement: {report['agreement']:.4f}")
+print(f"Parity passed: {report['parity_pass']}")
+print(f"Scikit-learn latency: {report['sklearn_latency_s']:.4f}s")
+print(f"ONNX latency: {report['onnx_latency_s']:.4f}s")
+print(f"Speedup: {report['sklearn_latency_s'] / report['onnx_latency_s']:.2f}x")
+print(f"ONNX throughput: {report['onnx_throughput_samples_per_s']:.0f} samples/s")
+
+if not report['parity_pass']:
+    print(f"WARNING: Parity check failed! Agreement {report['agreement']:.4f} < {report['min_agreement']:.4f}")
+```
+
+**ONNX Runtime Configuration:**
+
+- Uses `CPUExecutionProvider` for inference
+- Automatically handles multi-dimensional outputs (e.g., class probabilities)
+- Converts predictions to class labels using argmax when needed
+
+**Source:** `deployment/onnx_pipeline.py:23`
+
+---
+
+### batch_inference_cpu
+
+```python
+def batch_inference_cpu(
+    model,
+    x: np.ndarray,
+    batch_size: int = 64
+)
+```
+
+Runs batch inference on CPU by processing data in chunks.
+
+**Parameters:**
+
+<ParamField path="model" type="object" required>
+  Trained scikit-learn model with a `predict` method.
+</ParamField>
+
+<ParamField path="x" type="np.ndarray" required>
+  Input data to run predictions on. Shape: `(n_samples, n_features)`.
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="64">
+  Number of samples to process in each batch.
+  
+  Larger batches may be faster but use more memory.
+</ParamField>
+
+**Returns:**
+
+`np.ndarray` containing concatenated predictions for all samples.
+
+**Example:**
+
+```python
+from deployment.onnx_pipeline import batch_inference_cpu
+from sklearn.neighbors import KNeighborsClassifier
+import numpy as np
+
+# Train model
+knn = KNeighborsClassifier(n_neighbors=5)
+knn.fit(x_train, y_train)
+
+# Run batch inference
+predictions = batch_inference_cpu(
+    model=knn,
+    x=x_test,
+    batch_size=128
+)
+
+print(f"Predictions shape: {predictions.shape}")
+print(f"First 10 predictions: {predictions[:10]}")
+
+# Evaluate
+from sklearn.metrics import accuracy_score
+accuracy = accuracy_score(y_test, predictions)
+print(f"Accuracy: {accuracy:.4f}")
+```
+
+**Performance Tips:**
+
+- **Memory-constrained**: Use smaller batch sizes (16-32)
+- **CPU-bound**: Use larger batch sizes (128-256)
+- **KNN models**: Larger batches may provide better performance
+- **Random Forest**: Batch size has minimal impact
+
+**Source:** `deployment/onnx_pipeline.py:53`
+
+---
+
+### save_deployment_report
+
+```python
+def save_deployment_report(report: Dict, out_path: Path)
+```
+
+Saves a deployment report (e.g., from `validate_onnx`) to a JSON file.
+
+**Parameters:**
+
+<ParamField path="report" type="Dict" required>
+  Report dictionary to save. Typically the output from `validate_onnx`.
+</ParamField>
+
+<ParamField path="out_path" type="Path" required>
+  Output path for the JSON file.
+</ParamField>
+
+**Example:**
+
+```python
+from deployment.onnx_pipeline import export_to_onnx, validate_onnx, save_deployment_report
+from pathlib import Path
+
+# Export and validate
+onnx_path = export_to_onnx(model, x_test[:1], Path("models/model.onnx"))
+report = validate_onnx(onnx_path, model, x_test, min_agreement=0.98)
+
+# Save report
+save_deployment_report(report, Path("artifacts/onnx_validation_report.json"))
+print(f"Report saved to artifacts/onnx_validation_report.json")
+```
+
+**Source:** `deployment/onnx_pipeline.py:60`
+
+## Complete Deployment Pipeline Example
+
+```python
+from deployment.onnx_pipeline import (
+    export_to_onnx,
+    validate_onnx,
+    batch_inference_cpu,
+    save_deployment_report
+)
+from pathlib import Path
+from sklearn.ensemble import RandomForestClassifier
+import numpy as np
+
+# 1. Train model
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(x_train, y_train)
+
+# 2. Run batch inference with scikit-learn
+sk_predictions = batch_inference_cpu(rf, x_test, batch_size=64)
+print(f"Scikit-learn predictions: {len(sk_predictions)}")
+
+# 3. Export to ONNX
+artifacts_dir = Path("artifacts")
+onnx_path = export_to_onnx(
+    model=rf,
+    sample_input=x_test[:1],
+    out_path=artifacts_dir / "rf_model.onnx",
+    opset=12
+)
+print(f"Exported to {onnx_path}")
+
+# 4. Validate ONNX model
+validation_report = validate_onnx(
+    onnx_path=onnx_path,
+    sklearn_model=rf,
+    x_test=x_test,
+    min_agreement=0.98
+)
+
+# 5. Save validation report
+save_deployment_report(
+    report=validation_report,
+    out_path=artifacts_dir / "onnx_validation.json"
+)
+
+# 6. Check parity
+if validation_report['parity_pass']:
+    print(f"✓ ONNX validation passed!")
+    print(f"  Agreement: {validation_report['agreement']:.4f}")
+    print(f"  ONNX speedup: {validation_report['sklearn_latency_s'] / validation_report['onnx_latency_s']:.2f}x")
+else:
+    print(f"✗ ONNX validation failed!")
+    print(f"  Agreement: {validation_report['agreement']:.4f} < {validation_report['min_agreement']:.4f}")
+    raise RuntimeError("ONNX parity check failed")
+```
+
+## Related
+
+- [Infer CLI](/api/infer-cli) - CLI for inference and ONNX export
+- [Config Reference](/api/config) - DeploymentConfig class
+- [Train CLI](/api/train-cli) - Training CLI

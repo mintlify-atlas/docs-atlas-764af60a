@@ -1,0 +1,616 @@
+---
+title: 'Benchmarking'
+description: 'Evaluate models with confidence intervals and hardware simulations'
+icon: 'chart-line'
+---
+
+## Overview
+
+The benchmarking suite provides rigorous evaluation with statistical confidence intervals, hardware simulations, and operator-level profiling. Use `evaluate_cli.py` to run comprehensive experiments.
+
+## Command Line Options
+
+### Basic Configuration
+
+<ParamField path="--model" type="string" default="knn">
+  Model type: `knn` or `rf`
+</ParamField>
+
+<ParamField path="--runs" type="int" default="5">
+  Number of repeated experiments for confidence intervals
+</ParamField>
+
+<ParamField path="--sample-size" type="int" default="6000">
+  Training sample size
+</ParamField>
+
+<ParamField path="--dataset" type="string" default="mnist">
+  Dataset: `mnist` or `digits`
+</ParamField>
+
+<ParamField path="--seed" type="int" default="40">
+  Base random seed (incremented per run)
+</ParamField>
+
+### Hardware Simulation
+
+<ParamField path="--memory-budget-mb" type="int" default="8">
+  Memory constraint in megabytes
+</ParamField>
+
+<ParamField path="--compute-scale" type="float" default="1.0">
+  Compute scaling factor (1.0 = baseline)
+</ParamField>
+
+### Experiment Flags
+
+<ParamField path="--run-pruning-efficiency" type="boolean">
+  Run pruning hardware experiments across sparsity levels
+</ParamField>
+
+<ParamField path="--run-model-compression" type="boolean">
+  Run model-level compression experiments
+</ParamField>
+
+<ParamField path="--run-operator-profile" type="boolean">
+  Profile operator-level latency breakdown
+</ParamField>
+
+## Repeated Experiments with Confidence Intervals
+
+Run multiple trials to compute mean, standard deviation, and 95% confidence intervals.
+
+### Basic Usage
+
+```bash
+python source/research/evaluate_cli.py \
+  --model knn \
+  --runs 10 \
+  --dataset mnist
+```
+
+### Implementation
+
+**Source:** `benchmarks/benchmark.py:26-63`
+
+```python
+def repeated_benchmark(system_config: SystemConfig, training_config: TrainingConfig, 
+                        runs: int = 5) -> Dict:
+    accs: List[float] = []
+    infs: List[float] = []
+    trains: List[float] = []
+    sample_counts: List[int] = []
+    seeds: List[int] = []
+
+    for i in range(runs):
+        seed = system_config.seed + i
+        seeds.append(seed)
+        set_deterministic(seed)
+        x, y, _ = load_dataset(system_config)
+        x_train, x_test, y_train, y_test = split_and_normalize(x, y, system_config)
+        model = build_model(training_config)
+        _, train_t = timed_call(model.fit, x_train, y_train)
+        preds, infer_t = timed_call(model.predict, x_test)
+
+        accs.append(float(accuracy_score(y_test, preds)))
+        infs.append(float(infer_t))
+        trains.append(float(train_t))
+        sample_counts.append(int(len(x_test)))
+
+    inf_mean = _summary(infs, system_config.confidence_z)["mean"]
+    avg_samples = int(np.mean(sample_counts)) if sample_counts else 0
+    stats = {
+        "summary_version": "v2",
+        "model": training_config.model_name,
+        "runs": int(runs),
+        "seed_schedule": seeds,
+        "sample_count_eval": avg_samples,
+        "accuracy": _summary(accs, system_config.confidence_z),
+        "inference_latency_s": _summary(infs, system_config.confidence_z),
+        "training_time_s": _summary(trains, system_config.confidence_z),
+        "throughput_samples_per_s": float(avg_samples / max(inf_mean, 1e-9)),
+        "energy_per_inference_j": estimate_energy_joules(inf_mean / max(avg_samples, 1)),
+    }
+    save_json(stats, system_config.artifacts_dir / f"benchmark_{training_config.model_name}.json")
+    return stats
+```
+
+### Output Artifacts
+
+**JSON Report:** `artifacts/benchmark_knn.json`
+
+```json
+{
+  "summary_version": "v2",
+  "model": "knn",
+  "runs": 10,
+  "seed_schedule": [40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
+  "sample_count_eval": 2000,
+  "accuracy": {
+    "mean": 0.9654,
+    "std": 0.0023,
+    "ci95": 0.0014
+  },
+  "inference_latency_s": {
+    "mean": 0.1234,
+    "std": 0.0045,
+    "ci95": 0.0028
+  },
+  "training_time_s": {
+    "mean": 0.5678,
+    "std": 0.0234,
+    "ci95": 0.0145
+  },
+  "throughput_samples_per_s": 16207.45,
+  "energy_per_inference_j": 0.000062
+}
+```
+
+<Info>Confidence intervals use z=1.96 for 95% confidence by default. Adjust in `SystemConfig.confidence_z`.</Info>
+
+## Hardware Simulation
+
+Simulate memory and compute constraints to find optimal batch sizes.
+
+### Usage
+
+```bash
+python source/research/evaluate_cli.py \
+  --model knn \
+  --memory-budget-mb 16 \
+  --compute-scale 0.5
+```
+
+### Implementation Logic
+
+**Source:** `benchmarks/benchmark.py:66-98`
+
+```python
+def hardware_simulation(system_config: SystemConfig, training_config: TrainingConfig, 
+                         hw: HardwareSimConfig):
+    set_deterministic(system_config.seed)
+    x, y, _ = load_dataset(system_config)
+    x_train, x_test, y_train, y_test = split_and_normalize(x, y, system_config)
+
+    model = build_model(training_config)
+    model.fit(x_train, y_train)
+
+    resource = []
+    accuracy = []
+    for batch in hw.auto_batch_sizes:
+        effective_batch = max(1, int(batch * hw.compute_scale))
+        if (effective_batch * x_test.shape[1] * 4) / (1024 ** 2) > hw.memory_budget_mb:
+            effective_batch = max(1, int(hw.memory_budget_mb * (1024 ** 2) / (x_test.shape[1] * 4)))
+        subset = x_test[:effective_batch]
+        preds = model.predict(subset)
+        acc = accuracy_score(y_test[:effective_batch], preds)
+        resource.append(effective_batch)
+        accuracy.append(float(acc))
+
+    plot_curve(
+        resource,
+        accuracy,
+        "Resource vs Accuracy",
+        "Effective Batch Size",
+        "Accuracy",
+        system_config.artifacts_dir / f"resource_accuracy_{training_config.model_name}.png",
+    )
+    save_json(
+        {"effective_batch_sizes": resource, "accuracy": accuracy},
+        system_config.artifacts_dir / f"hardware_sim_{training_config.model_name}.json",
+    )
+    return resource, accuracy
+```
+
+### Output Artifacts
+
+- **JSON:** `artifacts/hardware_sim_knn.json`
+- **Plot:** `artifacts/resource_accuracy_knn.png`
+
+<Accordion title="Hardware Simulation Output">
+```json
+{
+  "effective_batch_sizes": [1, 8, 32, 128, 256, 512],
+  "accuracy": [0.92, 0.94, 0.96, 0.965, 0.965, 0.965]
+}
+```
+
+The plot shows how accuracy improves with larger batch sizes until it plateaus.
+</Accordion>
+
+## Pruning Efficiency Experiments
+
+Evaluate pruning impact across multiple sparsity levels with hardware constraints.
+
+### Usage
+
+```bash
+python source/research/evaluate_cli.py \
+  --model knn \
+  --run-pruning-efficiency \
+  --pruning-type weight \
+  --sparsity-levels "0.0,0.2,0.4,0.6,0.8" \
+  --memory-budget-mb 8 \
+  --runs 5
+```
+
+### Parameters
+
+<ParamField path="--pruning-type" type="string" default="weight">
+  Pruning strategy: `weight` or `neuron`
+</ParamField>
+
+<ParamField path="--sparsity-levels" type="string" default="0.0,0.2,0.4,0.6,0.8">
+  Comma-separated sparsity levels to test
+</ParamField>
+
+### Implementation
+
+**Source:** `benchmarks/benchmark.py:124-232`
+
+The experiment:
+1. Applies pruning at each sparsity level
+2. Trains model on pruned data
+3. Computes effective batch size based on hardware constraints
+4. Measures accuracy, latency, throughput, energy, and memory
+5. Repeats for statistical confidence
+
+### Key Code
+
+```python
+for level in sparsity_levels:
+    level_acc = []
+    level_lat = []
+    level_thr = []
+    level_energy = []
+    level_mem = []
+    level_model_mem = []
+    level_baseline_sparsity = []
+    level_added_sparsity = []
+
+    for run in range(runs):
+        set_deterministic(system_config.seed + run)
+        x, y, _ = load_dataset(system_config)
+        x_train, x_test, y_train, y_test = split_and_normalize(x, y, system_config)
+        baseline_sparsity = float((x_train == 0.0).mean())
+        pruned = _apply_pruning(x_train, x_test, pruning_type=pruning_type, level=level)
+        achieved_sparsity = float(pruned.stats.get("sparsity", pruned.stats.get("feature_pruned_ratio", level)))
+        added_sparsity = max(0.0, achieved_sparsity - baseline_sparsity)
+
+        model = build_model(training_config)
+        model.fit(pruned.x_train, y_train)
+
+        batch_size = _effective_batch_size(pruned.x_test.shape[1], hw)
+        eval_count = min(len(pruned.x_test), batch_size * 10)
+        eval_x = pruned.x_test[:eval_count]
+        eval_y = y_test[:eval_count]
+
+        preds, latency_s = timed_call(_predict_batched, model, eval_x, batch_size)
+        accuracy = float(accuracy_score(eval_y, preds))
+        throughput = float(len(eval_x) / max(latency_s, 1e-9))
+        energy = float(estimate_energy_joules(latency_s / max(len(eval_x), 1)))
+        dataset_memory_mb = float(eval_x.nbytes / (1024 ** 2))
+        model_memory_mb = float(len(pickle.dumps(model)) / (1024 ** 2))
+
+        level_acc.append(accuracy)
+        level_lat.append(float(latency_s))
+        level_thr.append(throughput)
+        level_energy.append(energy)
+        level_mem.append(dataset_memory_mb)
+        level_model_mem.append(model_memory_mb)
+        level_baseline_sparsity.append(baseline_sparsity)
+        level_added_sparsity.append(added_sparsity)
+```
+
+### Output Artifacts
+
+**JSON Report:** `artifacts/pruning_efficiency_knn_weight.json`
+
+```json
+{
+  "summary_version": "v2",
+  "model": "knn",
+  "pruning_type": "weight",
+  "hardware_constraints": {
+    "memory_budget_mb": 8,
+    "compute_scale": 1.0
+  },
+  "runs": 5,
+  "levels": [
+    {
+      "target_sparsity_level": 0.0,
+      "baseline_sparsity": {"mean": 0.12, "std": 0.001, "ci95": 0.0006},
+      "achieved_sparsity": 0.12,
+      "added_sparsity": {"mean": 0.0, "std": 0.0, "ci95": 0.0},
+      "accuracy": {"mean": 0.965, "std": 0.002, "ci95": 0.001},
+      "latency_s": {"mean": 0.123, "std": 0.005, "ci95": 0.003},
+      "throughput_samples_per_s": {"mean": 16260, "std": 650, "ci95": 402},
+      "energy_per_inference_j": {"mean": 0.000062, "std": 0.000003, "ci95": 0.000002},
+      "eval_memory_mb": {"mean": 12.5, "std": 0.0, "ci95": 0.0},
+      "model_memory_mb": {"mean": 4.8, "std": 0.01, "ci95": 0.006},
+      "effective_batch_size": 128
+    },
+    {
+      "target_sparsity_level": 0.4,
+      "achieved_sparsity": 0.48,
+      "added_sparsity": {"mean": 0.36, "std": 0.005, "ci95": 0.003},
+      "accuracy": {"mean": 0.958, "std": 0.003, "ci95": 0.002},
+      "latency_s": {"mean": 0.098, "std": 0.004, "ci95": 0.002},
+      "throughput_samples_per_s": {"mean": 20408, "std": 830, "ci95": 514},
+      "energy_per_inference_j": {"mean": 0.000049, "std": 0.000002, "ci95": 0.000001},
+      "eval_memory_mb": {"mean": 12.5, "std": 0.0, "ci95": 0.0},
+      "model_memory_mb": {"mean": 4.8, "std": 0.01, "ci95": 0.006},
+      "effective_batch_size": 128
+    }
+  ]
+}
+```
+
+**Generated Plots:**
+- `sparsity_vs_accuracy_knn_weight.png`
+- `sparsity_vs_latency_knn_weight.png`
+- `sparsity_vs_energy_knn_weight.png`
+
+<Note>**Source:** `benchmark.py:207-231` - Plots show sparsity trade-offs across metrics</Note>
+
+## Model-Level Compression Experiments
+
+Evaluate prototype reduction (KNN) or tree pruning (RF) at multiple compression levels.
+
+### Usage
+
+```bash
+python source/research/evaluate_cli.py \
+  --model knn \
+  --run-model-compression \
+  --compression-levels "0.0,0.2,0.4,0.6" \
+  --runs 5
+```
+
+### Implementation
+
+**Source:** `benchmarks/benchmark.py:235-313`
+
+For KNN:
+```python
+if training_config.model_name == "knn":
+    reduced = knn_prototype_reduction(x_train, y_train, reduction_level=level)
+    model = build_model(training_config)
+    model.fit(reduced.x_train, reduced.y_train)
+```
+
+For Random Forest:
+```python
+elif training_config.model_name == "rf":
+    max_depth = None if level <= 0 else max(2, int(20 * (1.0 - level)))
+    ccp_alpha = 0.001 * level
+    min_samples_leaf = 1 + int(9 * level)
+    model = prune_random_forest(base, max_depth=max_depth, ccp_alpha=ccp_alpha, 
+                                 min_samples_leaf=min_samples_leaf)
+    model.fit(x_train, y_train)
+```
+
+### Output Artifacts
+
+**JSON Report:** `artifacts/model_level_compression_knn.json`
+
+```json
+{
+  "summary_version": "v2",
+  "model": "knn",
+  "runs": 5,
+  "levels": [
+    {
+      "target_level": 0.0,
+      "accuracy": {"mean": 0.965, "std": 0.002, "ci95": 0.001},
+      "latency_s": {"mean": 0.123, "std": 0.005, "ci95": 0.003},
+      "model_size_mb": {"mean": 4.8, "std": 0.01, "ci95": 0.006},
+      "compression_ratio": {"mean": 0.0, "std": 0.0, "ci95": 0.0}
+    },
+    {
+      "target_level": 0.4,
+      "accuracy": {"mean": 0.952, "std": 0.004, "ci95": 0.002},
+      "latency_s": {"mean": 0.074, "std": 0.003, "ci95": 0.002},
+      "model_size_mb": {"mean": 2.9, "std": 0.01, "ci95": 0.006},
+      "compression_ratio": {"mean": 0.396, "std": 0.002, "ci95": 0.001}
+    }
+  ]
+}
+```
+
+**Generated Plots:**
+- `compression_ratio_vs_accuracy_knn.png`
+- `compression_ratio_vs_latency_knn.png`
+
+## Operator Profiling
+
+Breakdown inference latency into operator-level components.
+
+### Usage
+
+```bash
+python source/research/evaluate_cli.py \
+  --model knn \
+  --run-operator-profile \
+  --profile-batch-size 128
+```
+
+### Implementation
+
+**Source:** `benchmarks/benchmark.py:316-381`
+
+```python
+def operator_level_profile(system_config: SystemConfig, training_config: TrainingConfig, 
+                            batch_size: int = 64) -> Dict:
+    set_deterministic(system_config.seed)
+    x, y, _ = load_dataset(system_config)
+    x_train, x_test, y_train, _ = split_and_normalize(x, y, system_config)
+
+    model = build_model(training_config)
+    model.fit(x_train, y_train)
+    batch = x_test[: max(1, min(batch_size, len(x_test)))]
+
+    _, total_latency = timed_call(model.predict, batch)
+    samples = max(1, len(batch))
+    feature_count = batch.shape[1]
+    input_bytes = float(batch.nbytes)
+    model_bytes = float(len(pickle.dumps(model)))
+
+    if training_config.model_name == "knn":
+        operator_breakdown = {
+            "distance_compute_s": float(total_latency * 0.70),
+            "neighbor_selection_s": float(total_latency * 0.20),
+            "vote_aggregation_s": float(total_latency * 0.10),
+        }
+    else:
+        operator_breakdown = {
+            "tree_traversal_s": float(total_latency * 0.85),
+            "vote_aggregation_s": float(total_latency * 0.10),
+            "output_formatting_s": float(total_latency * 0.05),
+        }
+
+    bandwidth_bytes_per_s = float((input_bytes + model_bytes) / max(total_latency, 1e-9))
+    throughput = float(samples / max(total_latency, 1e-9))
+    utilization_vs_reference = float(min(1.0, throughput / 1_000_000.0))
+
+    profile = {
+        "model": training_config.model_name,
+        "batch_size": samples,
+        "features": int(feature_count),
+        "total_latency_s": float(total_latency),
+        "throughput_samples_per_s": throughput,
+        "memory": {
+            "input_batch_mb": float(input_bytes / (1024 ** 2)),
+            "serialized_model_mb": float(model_bytes / (1024 ** 2)),
+        },
+        "bandwidth": {
+            "estimated_bytes_per_s": bandwidth_bytes_per_s,
+            "estimated_mb_per_s": float(bandwidth_bytes_per_s / (1024 ** 2)),
+        },
+        "utilization": {
+            "reference_samples_per_s": 1_000_000,
+            "ratio": utilization_vs_reference,
+        },
+        "operator_latency_breakdown_s": operator_breakdown,
+        "notes": [
+            "Operator breakdown is an analytical partition of end-to-end latency.",
+            "Use hardware counters for production-grade microarchitectural profiling.",
+        ],
+    }
+
+    root = system_config.artifacts_dir
+    save_json(profile, root / f"operator_profile_{training_config.model_name}.json")
+    plot_bar(
+        operator_breakdown,
+        f"Operator Latency Breakdown ({training_config.model_name})",
+        "Latency (s)",
+        root / f"operator_profile_{training_config.model_name}.png",
+    )
+    return profile
+```
+
+### Output Artifacts
+
+**JSON Report:** `artifacts/operator_profile_knn.json`
+
+```json
+{
+  "model": "knn",
+  "batch_size": 128,
+  "features": 784,
+  "total_latency_s": 0.0234,
+  "throughput_samples_per_s": 5470.09,
+  "memory": {
+    "input_batch_mb": 0.384,
+    "serialized_model_mb": 4.8
+  },
+  "bandwidth": {
+    "estimated_bytes_per_s": 221184000,
+    "estimated_mb_per_s": 210.94
+  },
+  "utilization": {
+    "reference_samples_per_s": 1000000,
+    "ratio": 0.00547
+  },
+  "operator_latency_breakdown_s": {
+    "distance_compute_s": 0.01638,
+    "neighbor_selection_s": 0.00468,
+    "vote_aggregation_s": 0.00234
+  },
+  "notes": [
+    "Operator breakdown is an analytical partition of end-to-end latency.",
+    "Use hardware counters for production-grade microarchitectural profiling."
+  ]
+}
+```
+
+**Generated Plot:** `artifacts/operator_profile_knn.png`
+
+<Warning>Operator breakdowns are analytical estimates. For production profiling, use hardware performance counters (perf, VTune, etc.).</Warning>
+
+## Interpreting JSON Artifacts
+
+### Summary Statistics Format
+
+All repeated experiments use this format:
+
+```json
+{
+  "mean": 0.965,
+  "std": 0.002,
+  "ci95": 0.001
+}
+```
+
+<Accordion title="Field Descriptions">
+- **mean:** Arithmetic mean across runs
+- **std:** Standard deviation
+- **ci95:** Margin of error for 95% confidence interval
+- **Interpretation:** True value is in `[mean - ci95, mean + ci95]` with 95% confidence
+</Accordion>
+
+### Version Tracking
+
+All reports include `"summary_version": "v2"` for schema compatibility.
+
+## Complete Example Workflow
+
+```bash
+# Run comprehensive benchmarking suite
+python source/research/evaluate_cli.py \
+  --model knn \
+  --dataset mnist \
+  --runs 10 \
+  --memory-budget-mb 16 \
+  --compute-scale 1.0 \
+  --run-pruning-efficiency \
+  --pruning-type weight \
+  --sparsity-levels "0.0,0.1,0.2,0.3,0.4,0.5,0.6" \
+  --run-model-compression \
+  --compression-levels "0.0,0.2,0.4,0.6" \
+  --run-operator-profile \
+  --profile-batch-size 128
+```
+
+**This generates:**
+- `benchmark_knn.json` - Baseline statistics
+- `hardware_sim_knn.json` + plot - Hardware simulation
+- `pruning_efficiency_knn_weight.json` + 3 plots - Pruning analysis
+- `model_level_compression_knn.json` + 2 plots - Compression analysis
+- `operator_profile_knn.json` + plot - Operator breakdown
+
+<Tip>Use `--runs 20` or higher for publication-quality confidence intervals.</Tip>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Training" icon="brain" href="/guides/training">
+    Train models for benchmarking
+  </Card>
+  <Card title="Compression" icon="compress" href="/guides/compression">
+    Understand compression techniques
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/guides/deployment">
+    Deploy benchmarked models
+  </Card>
+</CardGroup>

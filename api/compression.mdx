@@ -1,0 +1,362 @@
+---
+title: "Compression"
+description: "API reference for model and feature compression functions"
+---
+
+## Overview
+
+The `compression` module provides functions for feature pruning and model compression techniques including weight pruning, neuron pruning, KNN prototype reduction, and Random Forest pruning.
+
+## Data Classes
+
+### PruningResult
+
+```python
+@dataclass
+class PruningResult:
+    x_train: np.ndarray
+    x_test: np.ndarray
+    stats: Dict[str, float]
+```
+
+Returned by feature pruning functions containing pruned datasets and statistics.
+
+**Attributes:**
+
+<ParamField path="x_train" type="np.ndarray">
+  Pruned training features.
+</ParamField>
+
+<ParamField path="x_test" type="np.ndarray">
+  Pruned test features.
+</ParamField>
+
+<ParamField path="stats" type="Dict[str, float]">
+  Pruning statistics (sparsity, thresholds, etc.).
+</ParamField>
+
+### ModelCompressionResult
+
+```python
+@dataclass
+class ModelCompressionResult:
+    model: object
+    x_train: np.ndarray
+    y_train: np.ndarray
+    stats: Dict[str, float]
+```
+
+Returned by model compression functions containing compressed training data and statistics.
+
+**Attributes:**
+
+<ParamField path="model" type="object">
+  Compressed model (may be None for prototype reduction).
+</ParamField>
+
+<ParamField path="x_train" type="np.ndarray">
+  Compressed training features.
+</ParamField>
+
+<ParamField path="y_train" type="np.ndarray">
+  Compressed training labels.
+</ParamField>
+
+<ParamField path="stats" type="Dict[str, float]">
+  Compression statistics.
+</ParamField>
+
+## Functions
+
+### weight_prune_features
+
+```python
+def weight_prune_features(
+    x_train: np.ndarray,
+    x_test: np.ndarray,
+    level: float
+) -> PruningResult
+```
+
+Prunes features by setting values below a weight threshold to zero. The threshold is computed as the `level`-th quantile of absolute values in the training data.
+
+**Parameters:**
+
+<ParamField path="x_train" type="np.ndarray" required>
+  Training feature matrix.
+</ParamField>
+
+<ParamField path="x_test" type="np.ndarray" required>
+  Test feature matrix.
+</ParamField>
+
+<ParamField path="level" type="float" required>
+  Quantile level for determining pruning threshold (0.0 to 1.0).
+  
+  - `0.0`: No pruning
+  - `0.5`: Prune values below median
+  - `0.9`: Aggressive pruning, keep only top 10% of weights
+</ParamField>
+
+**Returns:**
+
+`PruningResult` containing:
+- `x_train_pruned`: Training data with small weights zeroed
+- `x_test_pruned`: Test data with small weights zeroed
+- `stats`: Dictionary with `weight_threshold` and `sparsity`
+
+**Example:**
+
+```python
+from compression.compression import weight_prune_features
+import numpy as np
+
+# Load your data
+x_train = np.random.randn(1000, 784)
+x_test = np.random.randn(200, 784)
+
+# Prune 20% of smallest weights
+result = weight_prune_features(x_train, x_test, level=0.2)
+
+print(f"Achieved sparsity: {result.stats['sparsity']:.2%}")
+print(f"Threshold: {result.stats['weight_threshold']:.4f}")
+
+# Use pruned data for training
+model.fit(result.x_train, y_train)
+```
+
+**Source:** `compression/compression.py:25`
+
+---
+
+### neuron_prune_features
+
+```python
+def neuron_prune_features(
+    x_train: np.ndarray,
+    x_test: np.ndarray,
+    level: float
+) -> PruningResult
+```
+
+Prunes low-variance features (neurons) by removing features with variance below a threshold. The threshold is computed as the `level`-th quantile of feature variances.
+
+**Parameters:**
+
+<ParamField path="x_train" type="np.ndarray" required>
+  Training feature matrix.
+</ParamField>
+
+<ParamField path="x_test" type="np.ndarray" required>
+  Test feature matrix.
+</ParamField>
+
+<ParamField path="level" type="float" required>
+  Quantile level for variance cutoff (0.0 to 1.0).
+  
+  - `0.0`: Keep all features
+  - `0.1`: Remove bottom 10% of features by variance
+  - `0.5`: Remove bottom 50% of features
+</ParamField>
+
+**Returns:**
+
+`PruningResult` containing:
+- `x_train_pruned`: Training data with low-variance features removed
+- `x_test_pruned`: Test data with low-variance features removed
+- `stats`: Dictionary with `variance_cutoff` and `feature_pruned_ratio`
+
+**Example:**
+
+```python
+from compression.compression import neuron_prune_features
+import numpy as np
+
+# Remove bottom 10% of features by variance
+result = neuron_prune_features(x_train, x_test, level=0.1)
+
+print(f"Features removed: {result.stats['feature_pruned_ratio']:.2%}")
+print(f"Variance cutoff: {result.stats['variance_cutoff']:.6f}")
+print(f"Original features: {x_train.shape[1]}")
+print(f"Remaining features: {result.x_train.shape[1]}")
+
+# Use pruned data
+model.fit(result.x_train, y_train)
+```
+
+**Source:** `compression/compression.py:35`
+
+---
+
+### knn_prototype_reduction
+
+```python
+def knn_prototype_reduction(
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    reduction_level: float
+) -> ModelCompressionResult
+```
+
+Reduces the size of KNN training set by removing redundant prototypes. Uses nearest neighbor distance as a redundancy score and removes the most redundant samples.
+
+**Parameters:**
+
+<ParamField path="x_train" type="np.ndarray" required>
+  Training feature matrix.
+</ParamField>
+
+<ParamField path="y_train" type="np.ndarray" required>
+  Training labels.
+</ParamField>
+
+<ParamField path="reduction_level" type="float" required>
+  Fraction of training samples to remove (0.0 to 0.95).
+  
+  - `0.0`: No reduction, returns original data
+  - `0.2`: Remove 20% most redundant samples
+  - `0.5`: Remove 50% of training data
+  - Maximum allowed: `0.95` (keeps at least 5% of data)
+</ParamField>
+
+**Returns:**
+
+`ModelCompressionResult` containing:
+- `model`: None (no model object needed)
+- `x_train`: Reduced training features
+- `y_train`: Reduced training labels
+- `stats`: Dictionary with `prototype_kept_ratio`, `prototype_removed_ratio`, and `median_redundancy_distance`
+
+**Example:**
+
+```python
+from compression.compression import knn_prototype_reduction
+import numpy as np
+from sklearn.neighbors import KNeighborsClassifier
+
+# Reduce training set by 30%
+result = knn_prototype_reduction(x_train, y_train, reduction_level=0.3)
+
+print(f"Original samples: {len(x_train)}")
+print(f"Reduced samples: {len(result.x_train)}")
+print(f"Kept ratio: {result.stats['prototype_kept_ratio']:.2%}")
+print(f"Median redundancy: {result.stats['median_redundancy_distance']:.4f}")
+
+# Train KNN on reduced dataset
+knn = KNeighborsClassifier(n_neighbors=5)
+knn.fit(result.x_train, result.y_train)
+```
+
+**Algorithm:**
+
+1. Fit 2-nearest neighbors on training data
+2. Compute distance to 2nd nearest neighbor as redundancy score
+3. Remove samples with smallest distances (most redundant)
+4. Return reduced dataset
+
+**Source:** `compression/compression.py:45`
+
+---
+
+### prune_random_forest
+
+```python
+def prune_random_forest(
+    rf_model: RandomForestClassifier,
+    max_depth: Optional[int],
+    ccp_alpha: float,
+    min_samples_leaf: int
+) -> RandomForestClassifier
+```
+
+Creates a pruned copy of a Random Forest classifier by adjusting tree complexity parameters. Uses scikit-learn's cost-complexity pruning (`ccp_alpha`) and structural constraints.
+
+**Parameters:**
+
+<ParamField path="rf_model" type="RandomForestClassifier" required>
+  Base Random Forest model to prune. The model is cloned, so the original is not modified.
+</ParamField>
+
+<ParamField path="max_depth" type="Optional[int]" required>
+  Maximum tree depth. Set to `None` for unlimited depth, or an integer to limit tree growth.
+  
+  **Example:** `max_depth=10` limits trees to 10 levels
+</ParamField>
+
+<ParamField path="ccp_alpha" type="float" required>
+  Cost-complexity pruning parameter. Higher values lead to more aggressive pruning.
+  
+  - `0.0`: No cost-complexity pruning
+  - `0.001`: Light pruning
+  - `0.01`: Moderate pruning
+  - `0.1`: Aggressive pruning
+  
+  Negative values are clamped to `0.0`.
+</ParamField>
+
+<ParamField path="min_samples_leaf" type="int" required>
+  Minimum number of samples required in a leaf node.
+  
+  Higher values create simpler trees. Values < 1 are clamped to 1.
+</ParamField>
+
+**Returns:**
+
+A new `RandomForestClassifier` with updated pruning parameters. The model must be retrained on data.
+
+**Example:**
+
+```python
+from compression.compression import prune_random_forest
+from sklearn.ensemble import RandomForestClassifier
+import pickle
+
+# Train base model
+rf_base = RandomForestClassifier(n_estimators=100, random_state=42)
+rf_base.fit(x_train, y_train)
+base_size = len(pickle.dumps(rf_base))
+
+# Create pruned version
+rf_pruned = prune_random_forest(
+    rf_base,
+    max_depth=15,
+    ccp_alpha=0.005,
+    min_samples_leaf=5
+)
+
+# Retrain pruned model
+rf_pruned.fit(x_train, y_train)
+pruned_size = len(pickle.dumps(rf_pruned))
+
+print(f"Base model size: {base_size / 1024:.1f} KB")
+print(f"Pruned model size: {pruned_size / 1024:.1f} KB")
+print(f"Compression ratio: {1 - pruned_size/base_size:.2%}")
+
+# Evaluate accuracy
+base_acc = rf_base.score(x_test, y_test)
+pruned_acc = rf_pruned.score(x_test, y_test)
+print(f"Base accuracy: {base_acc:.4f}")
+print(f"Pruned accuracy: {pruned_acc:.4f}")
+```
+
+**Compression Strategy:**
+
+For a compression level `level` (0.0 to 1.0), use:
+
+```python
+max_depth = None if level <= 0 else max(2, int(20 * (1.0 - level)))
+ccp_alpha = 0.001 * level
+min_samples_leaf = 1 + int(9 * level)
+
+rf_pruned = prune_random_forest(rf_base, max_depth, ccp_alpha, min_samples_leaf)
+rf_pruned.fit(x_train, y_train)
+```
+
+**Source:** `compression/compression.py:71`
+
+## Related
+
+- [Train CLI](/api/train-cli) - CLI for training with compression
+- [Evaluate CLI](/api/evaluate-cli) - Benchmarking compression trade-offs
+- [Benchmarking](/api/benchmarking) - Compression experiments
+- [Config Reference](/api/config) - CompressionConfig class

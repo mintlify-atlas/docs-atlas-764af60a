@@ -1,0 +1,418 @@
+---
+title: "Benchmarking"
+description: "API reference for model benchmarking and profiling functions"
+---
+
+## Overview
+
+The `benchmarks` module provides comprehensive functions for model performance evaluation including repeated benchmarking, hardware simulation, pruning efficiency experiments, model compression analysis, and operator-level profiling.
+
+## Functions
+
+### repeated_benchmark
+
+```python
+def repeated_benchmark(
+    system_config: SystemConfig,
+    training_config: TrainingConfig,
+    runs: int = 5
+) -> Dict
+```
+
+Runs multiple training and evaluation iterations to compute statistical confidence intervals for model performance metrics.
+
+**Parameters:**
+
+<ParamField path="system_config" type="SystemConfig" required>
+  System configuration including seed, dataset, and sample size.
+</ParamField>
+
+<ParamField path="training_config" type="TrainingConfig" required>
+  Training configuration specifying model type and hyperparameters.
+</ParamField>
+
+<ParamField path="runs" type="int" default="5">
+  Number of independent runs to perform. Each run uses `seed + run_index` for reproducibility.
+</ParamField>
+
+**Returns:**
+
+Dictionary containing:
+
+- `summary_version`: Version identifier ("v2")
+- `model`: Model name
+- `runs`: Number of runs performed
+- `seed_schedule`: List of seeds used
+- `sample_count_eval`: Average number of test samples
+- `accuracy`: Summary statistics (mean, std, ci95)
+- `inference_latency_s`: Summary statistics for inference time
+- `training_time_s`: Summary statistics for training time
+- `throughput_samples_per_s`: Samples processed per second
+- `energy_per_inference_j`: Estimated energy per inference in joules
+
+**Example:**
+
+```python
+from benchmarks.benchmark import repeated_benchmark
+from research.config import SystemConfig, TrainingConfig
+
+sys_cfg = SystemConfig(seed=42, dataset="mnist", sample_size=6000)
+tr_cfg = TrainingConfig(model_name="knn")
+
+stats = repeated_benchmark(sys_cfg, tr_cfg, runs=10)
+
+print(f"Accuracy: {stats['accuracy']['mean']:.4f} ± {stats['accuracy']['ci95']:.4f}")
+print(f"Inference latency: {stats['inference_latency_s']['mean']:.4f}s")
+print(f"Throughput: {stats['throughput_samples_per_s']:.0f} samples/s")
+print(f"Energy per inference: {stats['energy_per_inference_j']:.6f}J")
+```
+
+**Artifacts:**
+
+- JSON report: `artifacts/benchmark_<model>.json`
+
+**Source:** `benchmarks/benchmark.py:26`
+
+---
+
+### hardware_simulation
+
+```python
+def hardware_simulation(
+    system_config: SystemConfig,
+    training_config: TrainingConfig,
+    hw: HardwareSimConfig
+) -> Tuple[List[int], List[float]]
+```
+
+Simulates model performance under hardware constraints (memory budget and compute scale) by testing different batch sizes.
+
+**Parameters:**
+
+<ParamField path="system_config" type="SystemConfig" required>
+  System configuration.
+</ParamField>
+
+<ParamField path="training_config" type="TrainingConfig" required>
+  Training configuration.
+</ParamField>
+
+<ParamField path="hw" type="HardwareSimConfig" required>
+  Hardware constraints configuration including:
+  - `memory_budget_mb`: Memory limit in megabytes
+  - `compute_scale`: Compute scaling factor (< 1.0 simulates slower hardware)
+  - `auto_batch_sizes`: Batch sizes to test
+</ParamField>
+
+**Returns:**
+
+Tuple of:
+1. `resource`: List of effective batch sizes tested
+2. `accuracy`: List of accuracy values for each batch size
+
+**Example:**
+
+```python
+from benchmarks.benchmark import hardware_simulation
+from research.config import SystemConfig, TrainingConfig, HardwareSimConfig
+
+sys_cfg = SystemConfig(seed=42, dataset="mnist")
+tr_cfg = TrainingConfig(model_name="rf")
+hw_cfg = HardwareSimConfig(memory_budget_mb=4, compute_scale=0.5)
+
+batch_sizes, accuracies = hardware_simulation(sys_cfg, tr_cfg, hw_cfg)
+
+for batch, acc in zip(batch_sizes, accuracies):
+    print(f"Batch size {batch}: accuracy {acc:.4f}")
+```
+
+**Artifacts:**
+
+- JSON report: `artifacts/hardware_sim_<model>.json`
+- Plot: `artifacts/resource_accuracy_<model>.png`
+
+**Source:** `benchmarks/benchmark.py:66`
+
+---
+
+### pruning_hardware_experiment
+
+```python
+def pruning_hardware_experiment(
+    system_config: SystemConfig,
+    training_config: TrainingConfig,
+    hw: HardwareSimConfig,
+    sparsity_levels: Sequence[float],
+    pruning_type: str = "weight",
+    runs: int = 3
+) -> Dict
+```
+
+Evaluates the impact of feature pruning on model performance under hardware constraints across multiple sparsity levels.
+
+**Parameters:**
+
+<ParamField path="system_config" type="SystemConfig" required>
+  System configuration.
+</ParamField>
+
+<ParamField path="training_config" type="TrainingConfig" required>
+  Training configuration.
+</ParamField>
+
+<ParamField path="hw" type="HardwareSimConfig" required>
+  Hardware constraints.
+</ParamField>
+
+<ParamField path="sparsity_levels" type="Sequence[float]" required>
+  List of sparsity levels to test (e.g., [0.0, 0.2, 0.4, 0.6, 0.8]).
+</ParamField>
+
+<ParamField path="pruning_type" type="str" default="weight">
+  Type of pruning to apply.
+  
+  **Choices:** `"weight"`, `"neuron"`
+</ParamField>
+
+<ParamField path="runs" type="int" default="3">
+  Number of runs per sparsity level for statistical confidence.
+</ParamField>
+
+**Returns:**
+
+Dictionary containing:
+
+- `summary_version`: Version identifier
+- `model`: Model name
+- `pruning_type`: Type of pruning applied
+- `hardware_constraints`: Hardware config used
+- `runs`: Number of runs
+- `levels`: List of per-level results, each containing:
+  - `target_sparsity_level`: Target sparsity
+  - `baseline_sparsity`: Original data sparsity
+  - `achieved_sparsity`: Actual sparsity achieved
+  - `added_sparsity`: Additional sparsity from pruning
+  - `accuracy`: Summary statistics
+  - `latency_s`: Summary statistics
+  - `throughput_samples_per_s`: Summary statistics
+  - `energy_per_inference_j`: Summary statistics
+  - `eval_memory_mb`: Memory usage statistics
+  - `model_memory_mb`: Model size statistics
+  - `effective_batch_size`: Batch size under constraints
+
+**Example:**
+
+```python
+from benchmarks.benchmark import pruning_hardware_experiment
+from research.config import SystemConfig, TrainingConfig, HardwareSimConfig
+
+sys_cfg = SystemConfig(seed=42, dataset="mnist")
+tr_cfg = TrainingConfig(model_name="knn")
+hw_cfg = HardwareSimConfig(memory_budget_mb=8, compute_scale=1.0)
+
+report = pruning_hardware_experiment(
+    sys_cfg,
+    tr_cfg,
+    hw_cfg,
+    sparsity_levels=[0.0, 0.2, 0.4, 0.6, 0.8],
+    pruning_type="weight",
+    runs=5
+)
+
+for level_data in report['levels']:
+    print(f"Sparsity {level_data['target_sparsity_level']:.1f}: "
+          f"acc={level_data['accuracy']['mean']:.4f}, "
+          f"latency={level_data['latency_s']['mean']:.4f}s")
+```
+
+**Artifacts:**
+
+- JSON report: `artifacts/pruning_efficiency_<model>_<pruning_type>.json`
+- Plots:
+  - `artifacts/sparsity_vs_accuracy_<model>_<pruning_type>.png`
+  - `artifacts/sparsity_vs_latency_<model>_<pruning_type>.png`
+  - `artifacts/sparsity_vs_energy_<model>_<pruning_type>.png`
+
+**Source:** `benchmarks/benchmark.py:124`
+
+---
+
+### model_level_compression_experiment
+
+```python
+def model_level_compression_experiment(
+    system_config: SystemConfig,
+    training_config: TrainingConfig,
+    runs: int = 3,
+    levels: Sequence[float] = (0.0, 0.2, 0.4, 0.6)
+) -> Dict
+```
+
+Evaluates model compression trade-offs by testing different compression levels. For KNN, uses prototype reduction; for Random Forest, uses tree pruning.
+
+**Parameters:**
+
+<ParamField path="system_config" type="SystemConfig" required>
+  System configuration.
+</ParamField>
+
+<ParamField path="training_config" type="TrainingConfig" required>
+  Training configuration.
+</ParamField>
+
+<ParamField path="runs" type="int" default="3">
+  Number of runs per compression level.
+</ParamField>
+
+<ParamField path="levels" type="Sequence[float]" default="(0.0, 0.2, 0.4, 0.6)">
+  Compression levels to test (0.0 = no compression, 1.0 = maximum compression).
+</ParamField>
+
+**Returns:**
+
+Dictionary containing:
+
+- `summary_version`: Version identifier
+- `model`: Model name
+- `runs`: Number of runs
+- `levels`: List of per-level results with:
+  - `target_level`: Compression level
+  - `accuracy`: Summary statistics
+  - `latency_s`: Summary statistics
+  - `model_size_mb`: Model size in megabytes
+  - `compression_ratio`: Fraction of size reduction
+
+**Example:**
+
+```python
+from benchmarks.benchmark import model_level_compression_experiment
+from research.config import SystemConfig, TrainingConfig
+
+sys_cfg = SystemConfig(seed=42, dataset="mnist", sample_size=6000)
+tr_cfg = TrainingConfig(model_name="knn")
+
+report = model_level_compression_experiment(
+    sys_cfg,
+    tr_cfg,
+    runs=5,
+    levels=[0.0, 0.2, 0.4, 0.6, 0.8]
+)
+
+for level_data in report['levels']:
+    print(f"Compression {level_data['target_level']:.1f}: "
+          f"acc={level_data['accuracy']['mean']:.4f}, "
+          f"size={level_data['model_size_mb']['mean']:.2f}MB, "
+          f"ratio={level_data['compression_ratio']['mean']:.2%}")
+```
+
+**Compression Strategies:**
+
+- **KNN**: Uses `knn_prototype_reduction` to remove redundant training samples
+- **Random Forest**: Uses `prune_random_forest` with:
+  - `max_depth = max(2, int(20 * (1.0 - level)))`
+  - `ccp_alpha = 0.001 * level`
+  - `min_samples_leaf = 1 + int(9 * level)`
+
+**Artifacts:**
+
+- JSON report: `artifacts/model_level_compression_<model>.json`
+- Plots:
+  - `artifacts/compression_ratio_vs_accuracy_<model>.png`
+  - `artifacts/compression_ratio_vs_latency_<model>.png`
+
+**Source:** `benchmarks/benchmark.py:235`
+
+---
+
+### operator_level_profile
+
+```python
+def operator_level_profile(
+    system_config: SystemConfig,
+    training_config: TrainingConfig,
+    batch_size: int = 64
+) -> Dict
+```
+
+Profiles model inference at the operator level, providing latency breakdown and resource utilization estimates.
+
+**Parameters:**
+
+<ParamField path="system_config" type="SystemConfig" required>
+  System configuration.
+</ParamField>
+
+<ParamField path="training_config" type="TrainingConfig" required>
+  Training configuration.
+</ParamField>
+
+<ParamField path="batch_size" type="int" default="64">
+  Batch size for profiling.
+</ParamField>
+
+**Returns:**
+
+Dictionary containing:
+
+- `model`: Model name
+- `batch_size`: Actual batch size used
+- `features`: Number of input features
+- `total_latency_s`: Total inference latency
+- `throughput_samples_per_s`: Throughput
+- `memory`: Memory usage breakdown
+  - `input_batch_mb`: Input batch size in MB
+  - `serialized_model_mb`: Model size in MB
+- `bandwidth`: Bandwidth estimates
+  - `estimated_bytes_per_s`: Bytes per second
+  - `estimated_mb_per_s`: Megabytes per second
+- `utilization`: Hardware utilization metrics
+  - `reference_samples_per_s`: Reference throughput (1M samples/s)
+  - `ratio`: Actual vs reference ratio
+- `operator_latency_breakdown_s`: Per-operator latency estimates
+  - **KNN**: `distance_compute_s`, `neighbor_selection_s`, `vote_aggregation_s`
+  - **RF**: `tree_traversal_s`, `vote_aggregation_s`, `output_formatting_s`
+- `notes`: Important caveats
+
+**Example:**
+
+```python
+from benchmarks.benchmark import operator_level_profile
+from research.config import SystemConfig, TrainingConfig
+
+sys_cfg = SystemConfig(seed=42, dataset="mnist")
+tr_cfg = TrainingConfig(model_name="knn")
+
+profile = operator_level_profile(sys_cfg, tr_cfg, batch_size=128)
+
+print(f"Total latency: {profile['total_latency_s']:.4f}s")
+print(f"Throughput: {profile['throughput_samples_per_s']:.0f} samples/s")
+print(f"Model size: {profile['memory']['serialized_model_mb']:.2f}MB")
+print("\nOperator breakdown:")
+for op, latency in profile['operator_latency_breakdown_s'].items():
+    print(f"  {op}: {latency:.4f}s")
+```
+
+**Operator Breakdown:**
+
+- **KNN**:
+  - Distance computation: 70% of latency
+  - Neighbor selection: 20% of latency
+  - Vote aggregation: 10% of latency
+
+- **Random Forest**:
+  - Tree traversal: 85% of latency
+  - Vote aggregation: 10% of latency
+  - Output formatting: 5% of latency
+
+**Artifacts:**
+
+- JSON report: `artifacts/operator_profile_<model>.json`
+- Plot: `artifacts/operator_profile_<model>.png`
+
+**Source:** `benchmarks/benchmark.py:316`
+
+## Related
+
+- [Evaluate CLI](/api/evaluate-cli) - CLI for running benchmarks
+- [Config Reference](/api/config) - Configuration classes
+- [Compression](/api/compression) - Compression functions used in experiments
