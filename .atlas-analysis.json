@@ -1,0 +1,104 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Handwritten Digit Classification",
+  "projectDescription": "A compact engineering workflow for training, compressing, benchmarking, and deploying handwritten digit classifiers under resource constraints.",
+  "theme": "aspen",
+  "primaryColor": "#2563eb",
+  "lightColor": "#60a5fa",
+  "darkColor": "#1e40af",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/models",
+              "concepts/datasets"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/training",
+              "guides/compression",
+              "guides/benchmarking",
+              "guides/deployment"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/hardware-simulation",
+              "advanced/reproducibility",
+              "advanced/system-design"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "CLI Commands",
+            "pages": [
+              "api/train-cli",
+              "api/evaluate-cli",
+              "api/infer-cli"
+            ]
+          },
+          {
+            "group": "Core Modules",
+            "pages": [
+              "api/compression",
+              "api/benchmarking",
+              "api/deployment"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/config"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Train KNN and Random Forest classifiers on MNIST and scikit-learn digits datasets",
+    "Feature pruning and prototype reduction for model compression",
+    "Hardware-constrained benchmarking with memory budgets and compute scaling",
+    "ONNX export with parity validation for deployment",
+    "Deterministic reproducibility with explicit seeding and artifact capture",
+    "Quantization simulation (float16 and int8_sim)",
+    "Statistical confidence intervals for repeated experiments"
+  ],
+  "publicApiSurface": [
+    "python -m research.train_cli",
+    "python -m research.evaluate_cli",
+    "python -m research.infer_cli",
+    "weight_prune_features",
+    "neuron_prune_features",
+    "knn_prototype_reduction",
+    "prune_random_forest",
+    "repeated_benchmark",
+    "hardware_simulation",
+    "pruning_hardware_experiment",
+    "model_level_compression_experiment",
+    "operator_level_profile",
+    "export_to_onnx",
+    "validate_onnx",
+    "batch_inference_cpu"
+  ]
+}
